@@ -123,16 +123,10 @@ export const HostGamePage: React.FC = () => {
             if (data && Array.isArray(data.players)) {
               const remotePlayers: LobbyPlayer[] = data.players.filter(isRealParticipant);
               if (phase === 'lobby') {
-                setPlayers((prev) => {
-                  const map = new Map<string, LobbyPlayer>();
-                  remotePlayers.forEach((p) => map.set(p.name.toLowerCase(), p));
-                  prev.forEach((p) => {
-                    if (!map.has(p.name.toLowerCase())) map.set(p.name.toLowerCase(), p);
-                  });
-                  const merged = Array.from(map.values());
-                  localStorage.setItem('cmrtc_live_lobby_players', JSON.stringify(merged));
-                  return merged;
-                });
+                setPlayers(remotePlayers);
+                try {
+                  localStorage.setItem('cmrtc_live_lobby_players', JSON.stringify(remotePlayers));
+                } catch {}
               } else {
                 if (typeof data.answeredCount === 'number') {
                   setAnsweredCount(data.answeredCount);
@@ -150,7 +144,9 @@ export const HostGamePage: React.FC = () => {
                       };
                     });
                     merged.sort((a: any, b: any) => b.score - a.score);
-                    localStorage.setItem('cmrtc_live_tournament_scores', JSON.stringify(merged));
+                    try {
+                      localStorage.setItem('cmrtc_live_tournament_scores', JSON.stringify(merged));
+                    } catch {}
                     return merged;
                   });
                 }
@@ -159,18 +155,6 @@ export const HostGamePage: React.FC = () => {
           }
         } catch {}
       }
-
-      // 2. Also read localStorage for same-browser events
-      try {
-        const saved = localStorage.getItem('cmrtc_live_lobby_players');
-        if (saved) {
-          const parsed = JSON.parse(saved);
-          if (Array.isArray(parsed) && phase === 'lobby') {
-            const valid = parsed.filter(isRealParticipant);
-            setPlayers((prev) => (valid.length > prev.length ? valid : prev));
-          }
-        }
-      } catch {}
     };
 
     window.addEventListener('storage', syncPlayers);
@@ -562,48 +546,45 @@ export const HostGamePage: React.FC = () => {
             </div>
           </div>
 
-          {/* Big Center Join Invitation */}
-          <div className="grid gap-6 lg:grid-cols-[1fr_2fr] items-center">
-            {/* Left QR Code Card */}
-            <div className="card p-6 sm:p-8 bg-white border border-blue-100 text-center space-y-4 shadow-xl">
-              <div className="text-xs font-semibold text-slate-500 uppercase tracking-wider">
-                Scan with Phone Camera
+          {/* Big Center Join Invitation (PIN Code ONLY, No QR) */}
+          <div className="card p-8 sm:p-12 bg-gradient-to-br from-blue-50/90 via-white to-sky-50/80 border-2 border-blue-200 text-center space-y-6 shadow-xl rounded-3xl max-w-4xl mx-auto">
+            <div className="inline-flex items-center gap-2 px-4 py-1.5 rounded-full bg-blue-100 text-blue-700 text-xs sm:text-sm font-bold">
+              <Sparkles className="w-4 h-4" />
+              JOIN USING AUDITORIUM ROOM CODE
+            </div>
+
+            <div>
+              <div className="text-xs sm:text-sm uppercase tracking-widest text-slate-500 font-bold mb-1">
+                Auditorium Room Joining PIN
               </div>
-              <div className="bg-blue-50/60 p-4 rounded-2xl inline-block border border-blue-200 shadow-inner">
-                {/* Simulated QR Pattern */}
-                <div className="w-40 h-40 grid grid-cols-7 gap-1 p-1 bg-white rounded-xl">
-                  {Array.from({ length: 49 }).map((_, i) => (
-                    <div
-                      key={i}
-                      className={`rounded-sm ${
-                        (i % 2 === 0 && i % 3 === 0) || i < 7 || i % 7 === 0 || i > 42
-                          ? 'bg-blue-900'
-                          : 'bg-transparent'
-                      }`}
-                    />
-                  ))}
-                </div>
-              </div>
-              <div className="text-xs text-slate-600">
-                Or enter on smartphone at <span className="font-mono text-blue-700 font-bold">/play</span>
+              <div className="font-mono text-6xl sm:text-8xl font-black tracking-widest text-blue-900 drop-shadow-sm select-all">
+                {roomPin}
               </div>
             </div>
 
-            {/* Right Giant Unique Room PIN Card */}
-            <div className="card p-6 sm:p-10 bg-gradient-to-br from-blue-50/90 via-white to-sky-50/80 border-2 border-blue-200 text-center space-y-4 shadow-xl">
-              <div className="inline-flex items-center gap-2 px-3 py-1 rounded-full bg-blue-100 text-blue-700 text-xs font-bold">
-                <Sparkles className="w-3.5 h-3.5" />
-                Unique Live Room PIN
+            <div className="p-4 sm:p-5 rounded-2xl bg-white/95 border border-blue-200/90 shadow-sm max-w-xl mx-auto space-y-2 text-left">
+              <div className="text-xs font-bold text-slate-800 uppercase tracking-wider flex items-center gap-2">
+                <span className="w-2.5 h-2.5 rounded-full bg-emerald-500 animate-ping" />
+                How Participants Join from Mobile Phone:
               </div>
-              <div className="font-mono text-5xl sm:text-7xl font-extrabold tracking-widest text-blue-900 drop-shadow-sm">
-                {roomPin}
-              </div>
-              <p className="text-sm text-slate-600 max-w-md mx-auto">
-                Open phone browser, click <strong>Join Game</strong>, and enter PIN <strong className="text-blue-700 font-mono">{roomPin}</strong>.
-              </p>
-              <div className="text-xs text-slate-400">
-                📍 Auditorium: <strong className="text-slate-700">{venue}</strong>
-              </div>
+              <ol className="text-xs sm:text-sm text-slate-600 space-y-1.5 list-decimal list-inside">
+                <li>
+                  Open smartphone browser & go to:{' '}
+                  <span className="font-mono font-bold text-blue-700 bg-blue-50 px-2 py-0.5 rounded border border-blue-200">
+                    {typeof window !== 'undefined' ? `${window.location.protocol}//${window.location.hostname}:5173/play` : '/play'}
+                  </span>
+                </li>
+                <li>
+                  Enter Joining Code: <strong className="font-mono text-blue-900 font-extrabold">{roomPin}</strong>
+                </li>
+                <li>Enter your Nickname and Branch, then tap <strong>Enter Game Room</strong>.</li>
+              </ol>
+            </div>
+
+            <div className="text-xs text-slate-500 flex items-center justify-center gap-4 flex-wrap">
+              <span>📍 Venue: <strong className="text-slate-800">{venue}</strong></span>
+              <span>•</span>
+              <span className="text-emerald-700 font-medium">🔒 Quiz starts automatically when Admin launches</span>
             </div>
           </div>
 

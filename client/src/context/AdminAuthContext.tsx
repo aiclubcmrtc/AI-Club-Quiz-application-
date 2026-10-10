@@ -147,13 +147,28 @@ export const AdminAuthProvider: React.FC<{ children: React.ReactNode }> = ({ chi
   // 6. Event Settings
   const [eventName, setEventName] = useState<string>('Battle of Bits \'26');
   const [venue, setVenue] = useState<string>('CMRTC B-Block room no. 119');
-  const [roomPin, setRoomPin] = useState<string>(() => generateUniquePin());
+  const [roomPin, setRoomPin] = useState<string>(() => {
+    try {
+      const saved = localStorage.getItem('cmrtc_host_room_pin');
+      if (saved && saved.trim()) return saved;
+    } catch {}
+    return '107 287';
+  });
 
   const generateNewRoomPin = (): string => {
     const newPin = generateUniquePin();
     setRoomPin(newPin);
+    try {
+      localStorage.setItem('cmrtc_host_room_pin', newPin);
+    } catch {}
     return newPin;
   };
+
+  useEffect(() => {
+    try {
+      localStorage.setItem('cmrtc_host_room_pin', roomPin);
+    } catch {}
+  }, [roomPin]);
 
   // Persistence Effects
   useEffect(() => {

@@ -25,6 +25,7 @@ export interface Room {
 
 // In-memory active rooms (starts completely clean, 0 dummy data)
 const activeRooms: Record<string, Room> = {};
+let currentActivePin: string = '107287';
 
 const normalizePin = (rawPin: string): string => {
   return (rawPin || '').replace(/[\s-_]/g, '').toLowerCase();
@@ -47,6 +48,19 @@ const getOrCreateRoom = (pin: string, title?: string): Room => {
   return activeRooms[norm];
 };
 
+// GET /api/quiz/active-pin - Return the current host's active room PIN
+quizRouter.get('/active-pin', (_req: Request, res: Response) => {
+  const norm = normalizePin(currentActivePin);
+  const room = activeRooms[norm] || getOrCreateRoom(norm);
+  res.json({
+    pin: norm,
+    formattedPin: `${norm.slice(0, 3)} ${norm.slice(3)}`,
+    status: room.status,
+    playerCount: room.players.length,
+    title: room.title
+  });
+});
+
 // GET /api/quiz/rooms - List active rooms
 quizRouter.get('/rooms', (_req: Request, res: Response) => {
   res.json(Object.values(activeRooms));
@@ -59,6 +73,7 @@ quizRouter.post('/room/register', (req: Request, res: Response) => {
     return res.status(400).json({ error: 'Room PIN is required.' });
   }
   const norm = normalizePin(pin);
+  currentActivePin = norm;
   const room = getOrCreateRoom(norm, title);
   if (title) room.title = title;
   if (batchId) room.batchId = batchId;
@@ -85,8 +100,18 @@ quizRouter.post('/room/:pin/join', (req: Request, res: Response) => {
     return res.status(400).json({ error: 'Nickname is required to join.' });
   }
 
-  // Ensure room exists
-  const room = getOrCreateRoom(norm);
+  // Check if room exists
+  let room = activeRooms[norm];
+  if (!room) {
+    if (norm === normalizePin(currentActivePin) || Object.keys(activeRooms).length === 0) {
+      room = getOrCreateRoom(norm);
+    } else {
+      return res.status(404).json({
+        error: `Room code '${req.params.pin}' not found! Please check the code shown on the host projector.`
+      });
+    }
+  }
+
   const cleanName = name.trim();
 
   // Check if player with this name already joined

@@ -40,11 +40,24 @@ export const PlayGamePage: React.FC = () => {
   const [phase, setPhase] = useState<'join' | 'lobby' | 'playing' | 'waiting_others' | 'answered' | 'finished'>('join');
 
   // Player Details
-  const [pin, setPin] = useState(initialPin || roomPin || '742 918');
+  const [pin, setPin] = useState(initialPin || roomPin || '107 287');
   const [nickname, setNickname] = useState('');
   const [branch, setBranch] = useState('CSE (AI & ML)');
   const [year, setYear] = useState('3rd Year');
   const [avatar, setAvatar] = useState('🤖');
+  const [joinError, setJoinError] = useState<string>('');
+
+  // Fetch current active room PIN from server on mount so phone pre-fills correct code
+  useEffect(() => {
+    fetch('/api/quiz/active-pin')
+      .then((r) => r.json())
+      .then((data) => {
+        if (data && data.formattedPin && !initialPin) {
+          setPin(data.formattedPin);
+        }
+      })
+      .catch(() => {});
+  }, [initialPin]);
 
   // Active round batch questions
   const currentBatch = batches.find((b) => b.id === activeBatchId) || batches[0];
@@ -259,12 +272,20 @@ export const PlayGamePage: React.FC = () => {
         })
       });
       const data = await res.json();
+      if (!res.ok || data.error) {
+        setJoinError(data.error || `Room code "${pin}" not found. Please verify the code displayed on the auditorium screen.`);
+        return;
+      }
       if (data && data.player) {
         setPlayerId(data.player.id);
       }
     } catch (err) {
       console.warn('Network join note: fallback to local storage', err);
+      setJoinError('Cannot connect to quiz server. Please make sure your phone is connected to the same Wi-Fi network.');
+      return;
     }
+
+    setJoinError('');
 
     // 2. Register student in live lobby storage so they appear on Auditorium Host Projector
     try {
@@ -676,6 +697,13 @@ export const PlayGamePage: React.FC = () => {
           </div>
 
           <form onSubmit={handleJoin} className="space-y-4">
+            {joinError && (
+              <div className="p-3.5 rounded-2xl bg-rose-50 border border-rose-200 text-rose-700 text-xs font-semibold flex items-center gap-2 animate-shake">
+                <XCircle className="w-4 h-4 text-rose-500 shrink-0" />
+                <span>{joinError}</span>
+              </div>
+            )}
+
             {/* Room PIN */}
             <div>
               <label className="block text-xs font-bold text-slate-700 uppercase tracking-wider mb-1">
@@ -810,13 +838,16 @@ export const PlayGamePage: React.FC = () => {
             </p>
           </div>
 
-          <button
-            onClick={handleStartGame}
-            className="btn-primary w-full py-3.5 text-base shadow-md"
-          >
-            <Play className="w-4 h-4 fill-current mr-1" />
-            Start Quiz Round
-          </button>
+          {/* Waiting for Host to Start (Participants cannot start the quiz manually) */}
+          <div className="p-4 sm:p-5 rounded-2xl bg-amber-50/90 border border-amber-200 text-amber-950 space-y-2 text-center shadow-inner">
+            <div className="inline-flex items-center justify-center gap-2 font-extrabold text-sm text-amber-900">
+              <span className="w-3 h-3 rounded-full bg-amber-500 animate-ping" />
+              Waiting for Host to Launch Quiz...
+            </div>
+            <p className="text-xs text-amber-800 leading-relaxed max-w-xs mx-auto">
+              You are connected! Keep this screen open. The quiz questions will automatically appear on your phone as soon as the Admin clicks <strong>Start Quiz</strong> on the auditorium projector.
+            </p>
+          </div>
 
           <button
             type="button"

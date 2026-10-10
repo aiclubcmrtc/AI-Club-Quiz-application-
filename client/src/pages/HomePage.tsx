@@ -8,7 +8,7 @@ import {
   Trophy,
   Zap,
   ArrowRight,
-  QrCode,
+  KeyRound,
   Users,
   Flame,
   Award,
@@ -200,7 +200,7 @@ export const HomePage: React.FC = () => {
             {/* Floating Room PIN Card (Top-Left) */}
             <div className="absolute -top-3 -left-2 sm:-left-4 -rotate-3 rounded-2xl bg-white border-2 border-blue-200 px-4 py-2.5 shadow-xl backdrop-blur-md">
               <div className="text-[10px] font-bold uppercase tracking-wider text-slate-500 flex items-center gap-1.5">
-                <QrCode className="w-3 h-3 text-blue-600" />
+                <KeyRound className="w-3 h-3 text-blue-600" />
                 Live PIN
               </div>
               <div className="font-mono text-xl sm:text-2xl font-extrabold tracking-widest text-blue-700">
