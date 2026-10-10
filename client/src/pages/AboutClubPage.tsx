@@ -1,7 +1,6 @@
 import React from 'react';
 import {
   Brain,
-  Users,
   Award,
   Sparkles,
   MapPin,
@@ -18,45 +17,6 @@ import { useAdminAuth } from '../context/AdminAuthContext';
 
 export const AboutClubPage: React.FC = () => {
   const { clubLogo, venue } = useAdminAuth();
-
-  const clubTeam = [
-    {
-      role: 'Faculty Coordinator',
-      name: 'Dr. K. Srinivas Rao',
-      dept: 'Department of CSE (AI & ML)',
-      avatar: '👨‍🏫'
-    },
-    {
-      role: 'Faculty Advisor',
-      name: 'Prof. P. Sunitha',
-      dept: 'Department of Computer Science',
-      avatar: '👩‍🏫'
-    },
-    {
-      role: 'Club President',
-      name: 'Husail Abul Aziz',
-      dept: 'CSE (AI & ML) • Final Year',
-      avatar: '⚡'
-    },
-    {
-      role: 'Technical Lead',
-      name: 'Aditya Teja',
-      dept: 'CSE Core • 3rd Year',
-      avatar: '🚀'
-    },
-    {
-      role: 'Event & Quiz Master',
-      name: 'Sneha Reddy',
-      dept: 'CSE (Data Science) • 3rd Year',
-      avatar: '🎯'
-    },
-    {
-      role: 'Platform & Cloud Lead',
-      name: 'Rahul Varma',
-      dept: 'CSE (Cyber Security) • 3rd Year',
-      avatar: '🛡️'
-    }
-  ];
 
   const initiatives = [
     {
@@ -156,36 +116,6 @@ export const AboutClubPage: React.FC = () => {
               </div>
             );
           })}
-        </div>
-      </div>
-
-      {/* Team & Coordinators Grid */}
-      <div className="space-y-6">
-        <div className="space-y-1">
-          <h2 className="font-display text-2xl sm:text-3xl font-bold text-slate-900">
-            Organizing Committee & Leads
-          </h2>
-          <p className="text-slate-500 text-xs sm:text-sm">
-            Faculty mentors and student leaders driving the Battle of Bits event.
-          </p>
-        </div>
-
-        <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 gap-4">
-          {clubTeam.map((member, i) => (
-            <div
-              key={i}
-              className="card p-5 bg-white border border-blue-100 space-y-2 text-center shadow-sm rounded-2xl hover:border-blue-300 transition-colors"
-            >
-              <div className="text-3xl mb-1">{member.avatar}</div>
-              <div className="text-[10px] font-bold text-blue-600 uppercase tracking-wider">
-                {member.role}
-              </div>
-              <div className="font-display text-base font-bold text-slate-900">
-                {member.name}
-              </div>
-              <div className="text-[11px] text-slate-500">{member.dept}</div>
-            </div>
-          ))}
         </div>
       </div>
 

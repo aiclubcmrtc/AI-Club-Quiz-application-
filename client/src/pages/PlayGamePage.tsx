@@ -7,7 +7,6 @@ import {
   Trophy,
   CheckCircle,
   XCircle,
-  Award,
   RotateCcw,
   Sparkles,
   ChevronRight,
@@ -68,6 +67,22 @@ export const PlayGamePage: React.FC = () => {
   const [userHasMarked, setUserHasMarked] = useState(false);
   const [concludeReason, setConcludeReason] = useState<'timer' | 'all_marked' | null>(null);
   const [autoAdvanceTimer, setAutoAdvanceTimer] = useState(5);
+  const [playerId, setPlayerId] = useState<string>('');
+
+  // Synchronous selection tracking to completely eliminate stale closure on mobile phones
+  const userSelectionRef = useRef<{
+    hasMarked: boolean;
+    selectedOption: number | null;
+    isCorrect: boolean;
+    points: number;
+    timeTaken: number;
+  }>({
+    hasMarked: false,
+    selectedOption: null,
+    isCorrect: false,
+    points: 0,
+    timeTaken: 0
+  });
 
   interface PlayLeaderboardEntry {
     id: string;
@@ -116,9 +131,7 @@ export const PlayGamePage: React.FC = () => {
 
       peerSimRef.current = setInterval(() => {
         setMarkedCount((prev) => {
-          // If current user hasn't marked yet, peers mark up to totalContestants - 1
-          // Once user marks, markedCount can reach totalContestants
-          const maxAllowed = userHasMarked ? totalContestants : totalContestants - 1;
+          const maxAllowed = userSelectionRef.current.hasMarked ? totalContestants : totalContestants - 1;
           const next = prev + 1;
           if (next >= totalContestants) {
             // CASE 2 SATISFIED: EVERYONE HAS MARKED THE QUESTION!
@@ -144,7 +157,9 @@ export const PlayGamePage: React.FC = () => {
             // CASE 1 SATISFIED: TIME WE GAVE FOR THIS QUESTION RAN OUT!
             clearInterval(timerRef.current!);
             if (peerSimRef.current) clearInterval(peerSimRef.current);
-            triggerQuestionConclude('timer');
+            setTimeout(() => {
+              triggerQuestionConclude('timer');
+            }, 0);
             return 0;
           }
           if (prev <= 4) {
@@ -159,7 +174,7 @@ export const PlayGamePage: React.FC = () => {
         if (peerSimRef.current) clearInterval(peerSimRef.current);
       };
     }
-  }, [phase, currentIndex, userHasMarked, totalContestants]);
+  }, [phase, currentIndex, totalContestants]);
 
   // Auto-advance countdown & sound trigger on the answered/breakdown screen (along with leaderboard reveal)
   useEffect(() => {
@@ -174,6 +189,34 @@ export const PlayGamePage: React.FC = () => {
         });
       } else {
         sounds.playIncorrect();
+      }
+
+      // Fetch latest network room scores to update leaderboard with real contestants' scores
+      const cleanPin = (pin || '').replace(/[\s-_]/g, '').toLowerCase();
+      if (cleanPin) {
+        fetch(`/api/quiz/room/${cleanPin}`)
+          .then((res) => res.json())
+          .then((data) => {
+            if (data && Array.isArray(data.players) && data.players.length > 0) {
+              setLeaderboard((prev) => {
+                const updated = prev.map((item) => {
+                  if (item.isMe) return item;
+                  const match = data.players.find((p: any) => p.name.toLowerCase() === item.name.toLowerCase());
+                  if (match) {
+                    return {
+                      ...item,
+                      score: match.score || item.score,
+                      streak: match.streak || item.streak
+                    };
+                  }
+                  return item;
+                });
+                updated.sort((a, b) => b.score - a.score);
+                return updated;
+              });
+            }
+          })
+          .catch(() => {});
       }
 
       setAutoAdvanceTimer(5);
@@ -196,13 +239,34 @@ export const PlayGamePage: React.FC = () => {
     }
   }, [phase, currentIndex, isCorrect]);
 
-  const handleJoin = (e: React.FormEvent) => {
+  const handleJoin = async (e: React.FormEvent) => {
     e.preventDefault();
     const cleanNick = nickname.trim();
     if (!cleanNick) return;
     sounds.playPop();
 
-    // 1. Register student in live lobby storage so they appear on Auditorium Host Projector
+    const cleanPin = (pin || '').replace(/[\s-_]/g, '').toLowerCase();
+
+    // 1. Join room on backend over network (so phones join host session live)
+    try {
+      const res = await fetch(`/api/quiz/room/${cleanPin}/join`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          name: cleanNick,
+          branch: branch,
+          avatar: avatar
+        })
+      });
+      const data = await res.json();
+      if (data && data.player) {
+        setPlayerId(data.player.id);
+      }
+    } catch (err) {
+      console.warn('Network join note: fallback to local storage', err);
+    }
+
+    // 2. Register student in live lobby storage so they appear on Auditorium Host Projector
     try {
       const stored = JSON.parse(localStorage.getItem('cmrtc_live_lobby_players') || '[]');
       const newPlayer = {
@@ -219,7 +283,7 @@ export const PlayGamePage: React.FC = () => {
       console.error(err);
     }
 
-    // 2. Register student in the Admin Participants Database (cmrtc_stored_participants_v2)
+    // 3. Register student in the Admin Participants Database (cmrtc_stored_participants_v2)
     try {
       const storedParts = JSON.parse(localStorage.getItem('cmrtc_stored_participants_v2') || '[]');
       const cleanedParts = (Array.isArray(storedParts) ? storedParts : []).filter(
@@ -229,7 +293,7 @@ export const PlayGamePage: React.FC = () => {
         id: `p-${Date.now()}`,
         name: cleanNick,
         branch: branch,
-        year: '3rd Year',
+        year: year || '3rd Year',
         score: 0,
         streak: 0,
         accuracy: '0%',
@@ -245,22 +309,53 @@ export const PlayGamePage: React.FC = () => {
     setPhase('lobby');
   };
 
-  const initLeaderboard = () => {
+  // While waiting in the lobby, listen for the Host starting the quiz over the network
+  useEffect(() => {
+    if (phase === 'lobby') {
+      const cleanPin = (pin || '').replace(/[\s-_]/g, '').toLowerCase();
+      const checkHostStart = () => {
+        fetch(`/api/quiz/room/${cleanPin}`)
+          .then((res) => res.json())
+          .then((data) => {
+            if (data && data.status === 'question') {
+              // Host started the quiz!
+              initLeaderboard(data.players);
+              const qIdx = typeof data.currentQuestion === 'number' ? data.currentQuestion : 0;
+              setCurrentIndex(qIdx);
+              resetForNewQuestion(activeQuestions[qIdx]?.timeLimit || 15);
+              setPhase('playing');
+            }
+          })
+          .catch(() => {});
+      };
+
+      const interval = setInterval(checkHostStart, 1000);
+      return () => clearInterval(interval);
+    }
+  }, [phase, pin]);
+
+  const initLeaderboard = (networkPlayers?: any[]) => {
     let roomPlayers: any[] = [];
-    try {
-      const stored = JSON.parse(localStorage.getItem('cmrtc_live_lobby_players') || '[]');
-      roomPlayers = (Array.isArray(stored) ? stored : []).filter(
+    if (Array.isArray(networkPlayers) && networkPlayers.length > 0) {
+      roomPlayers = networkPlayers.filter(
         (p: any) => isRealParticipant(p) && p.name.toLowerCase() !== (nickname || '').trim().toLowerCase()
       );
-    } catch {}
+    } else {
+      try {
+        const stored = JSON.parse(localStorage.getItem('cmrtc_live_lobby_players') || '[]');
+        roomPlayers = (Array.isArray(stored) ? stored : []).filter(
+          (p: any) => isRealParticipant(p) && p.name.toLowerCase() !== (nickname || '').trim().toLowerCase()
+        );
+      } catch {}
+    }
 
     // Peers pool strictly contains other REAL participants who joined the room
     const peersPool = roomPlayers.map((p, idx) => ({
       id: p.id || `peer-${idx}`,
       name: p.name,
       branch: p.branch,
-      score: 0,
-      streak: 0,
+      score: p.score || 0,
+      streak: p.streak || 0,
       avatar: p.avatar || '⚡',
       lastDelta: 0,
       previousRank: idx + 2,
@@ -404,16 +499,37 @@ export const PlayGamePage: React.FC = () => {
     });
   };
 
+  const resetForNewQuestion = (duration: number = 15) => {
+    userSelectionRef.current = {
+      hasMarked: false,
+      selectedOption: null,
+      isCorrect: false,
+      points: 0,
+      timeTaken: 0
+    };
+    setSelectedOption(null);
+    setUserHasMarked(false);
+    setIsCorrect(false);
+    setPointsGained(0);
+    setMarkedCount(0);
+    setConcludeReason(null);
+    setTimeLeft(duration);
+  };
+
   const triggerQuestionConclude = (reason: 'timer' | 'all_marked') => {
     if (timerRef.current) clearInterval(timerRef.current);
     if (peerSimRef.current) clearInterval(peerSimRef.current);
     setConcludeReason(reason);
 
-    let earnedPts = pointsGained;
-    let earnedCorrect = isCorrect;
+    // Read synchronously from userSelectionRef to guarantee mobile taps are NEVER missed
+    const sel = userSelectionRef.current;
+    const didUserMark = sel.hasMarked || userHasMarked || (selectedOption !== null && selectedOption !== -1);
 
-    // If user never marked before timer expired (Case 1), mark as time up with 0 pts
-    if (!userHasMarked) {
+    let earnedPts = 0;
+    let earnedCorrect = false;
+
+    // Only if participant genuinely never marked any option before timer ended, mark as time expired
+    if (!didUserMark) {
       setSelectedOption(-1);
       setIsCorrect(false);
       setPointsGained(0);
@@ -421,9 +537,20 @@ export const PlayGamePage: React.FC = () => {
       earnedPts = 0;
       earnedCorrect = false;
     } else {
-      setTotalScore((prev) => prev + earnedPts);
-      setStreak((prev) => (earnedCorrect ? prev + 1 : 0));
-      if (earnedCorrect) {
+      // Participant answered in time! Award full points and keep their chosen answer
+      const opt = sel.hasMarked ? sel.selectedOption : selectedOption;
+      const correct = sel.hasMarked ? sel.isCorrect : isCorrect;
+      const pts = sel.hasMarked ? sel.points : pointsGained;
+
+      setSelectedOption(opt);
+      setIsCorrect(correct);
+      setPointsGained(pts);
+      earnedPts = pts;
+      earnedCorrect = correct;
+
+      setTotalScore((prev) => prev + pts);
+      setStreak((prev) => (correct ? prev + 1 : 0));
+      if (correct) {
         setTotalCorrect((prev) => prev + 1);
       }
     }
@@ -437,12 +564,9 @@ export const PlayGamePage: React.FC = () => {
   const advanceToNextQuestion = () => {
     sounds.playPop();
     if (currentIndex + 1 < activeQuestions.length) {
-      setCurrentIndex((prev) => prev + 1);
-      setSelectedOption(null);
-      setUserHasMarked(false);
-      setMarkedCount(0);
-      setConcludeReason(null);
-      setTimeLeft(activeQuestions[currentIndex + 1]?.timeLimit || 15);
+      const nextIdx = currentIndex + 1;
+      setCurrentIndex(nextIdx);
+      resetForNewQuestion(activeQuestions[nextIdx]?.timeLimit || 15);
       setPhase('playing');
     } else {
       sounds.playVictory();
@@ -459,14 +583,10 @@ export const PlayGamePage: React.FC = () => {
     sounds.playPop();
     initLeaderboard();
     setCurrentIndex(0);
-    setSelectedOption(null);
-    setUserHasMarked(false);
-    setMarkedCount(0);
-    setConcludeReason(null);
     setTotalScore(0);
     setStreak(0);
     setTotalCorrect(0);
-    setTimeLeft(currentQ.timeLimit || 15);
+    resetForNewQuestion(currentQ.timeLimit || 15);
     setPhase('playing');
   };
 
@@ -475,18 +595,43 @@ export const PlayGamePage: React.FC = () => {
     if (phase !== 'playing' || selectedOption !== null) return;
 
     sounds.playPop(); // Instant tap confirmation; result audio deferred to answer reveal screen
-    setSelectedOption(index);
-    setUserHasMarked(true);
 
+    const timeTaken = (currentQ.timeLimit || 15) - timeLeft;
     const correct = index === currentQ.correctIndex;
-    setIsCorrect(correct);
-
+    let points = 0;
     if (correct) {
       const speedFactor = Math.max(0.4, timeLeft / (currentQ.timeLimit || 15));
-      const points = Math.round(1000 * speedFactor) + streak * 50;
-      setPointsGained(points);
-    } else {
-      setPointsGained(0);
+      points = Math.round(1000 * speedFactor) + streak * 50;
+    }
+
+    // 1. Immediately store selection synchronously in ref to prevent stale closures
+    userSelectionRef.current = {
+      hasMarked: true,
+      selectedOption: index,
+      isCorrect: correct,
+      points,
+      timeTaken
+    };
+
+    // 2. Set React states
+    setSelectedOption(index);
+    setUserHasMarked(true);
+    setIsCorrect(correct);
+    setPointsGained(points);
+
+    // 3. Post answer to backend room over network
+    const cleanPin = (pin || '').replace(/[\s-_]/g, '').toLowerCase();
+    if (cleanPin) {
+      fetch(`/api/quiz/room/${cleanPin}/answer`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          playerId: playerId || nickname,
+          points,
+          isCorrect: correct,
+          questionIndex: currentIndex
+        })
+      }).catch((err) => console.warn('Answer sync notice:', err));
     }
 
     // Calculate new total marked count including current user
@@ -503,11 +648,6 @@ export const PlayGamePage: React.FC = () => {
       // Still waiting for remaining peers OR for timer (Case 1)
       setPhase('waiting_others');
     }
-  };
-
-  const downloadCertificate = () => {
-    sounds.playPop();
-    alert(`Certificate generated for ${nickname || 'Participant'} (${branch})! Ranking: Top 5% in AI CLUB CMRTC Battle of Bits '26.`);
   };
 
   return (
@@ -854,19 +994,17 @@ export const PlayGamePage: React.FC = () => {
               {/* Left Column: Answer Feedback Card */}
               <div className="card p-6 sm:p-8 bg-white border border-blue-100 shadow-xl rounded-3xl text-center space-y-5">
                 {/* Case Badge indicating why question concluded */}
-                <div className="flex justify-center">
-                  {concludeReason === 'all_marked' ? (
+                  {(userSelectionRef.current.hasMarked || userHasMarked || (selectedOption !== null && selectedOption !== -1)) ? (
                     <div className="inline-flex items-center gap-1.5 px-3.5 py-1.5 rounded-full bg-emerald-100 text-emerald-800 text-xs font-bold border border-emerald-200 shadow-sm">
                       <CheckCircle className="w-4 h-4 text-emerald-600" />
-                      <span>Case 2: All {totalContestants} Participants Marked!</span>
+                      <span>✓ Answer Locked In & Recorded</span>
                     </div>
                   ) : (
-                    <div className="inline-flex items-center gap-1.5 px-3.5 py-1.5 rounded-full bg-blue-100 text-blue-800 text-xs font-bold border border-blue-200 shadow-sm">
-                      <Clock className="w-4 h-4 text-blue-600" />
-                      <span>Case 1: Time Limit Expired!</span>
+                    <div className="inline-flex items-center gap-1.5 px-3.5 py-1.5 rounded-full bg-amber-100 text-amber-800 text-xs font-bold border border-amber-200 shadow-sm">
+                      <Clock className="w-4 h-4 text-amber-600" />
+                      <span>⏰ Time Expired Before Answering</span>
                     </div>
                   )}
-                </div>
 
                 {/* Result Icon */}
                 <div className="space-y-2">
@@ -1118,18 +1256,11 @@ export const PlayGamePage: React.FC = () => {
           {/* Action Buttons */}
           <div className="space-y-2.5">
             <button
-              onClick={downloadCertificate}
-              className="btn-primary w-full py-3.5 text-sm flex items-center justify-center gap-2 shadow-md"
-            >
-              <Award className="w-4 h-4" />
-              Download Merit Certificate
-            </button>
-            <button
               onClick={() => {
                 sounds.playPop();
                 setPhase('join');
               }}
-              className="btn-secondary w-full py-3 text-sm flex items-center justify-center gap-2"
+              className="btn-primary w-full py-3.5 text-sm flex items-center justify-center gap-2 shadow-md"
             >
               <RotateCcw className="w-4 h-4" />
               Play Another Quiz

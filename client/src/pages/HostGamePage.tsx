@@ -94,31 +94,92 @@ export const HostGamePage: React.FC = () => {
 
   const timerRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const currentQ = activeQuestions[currentIndex] || activeQuestions[0];
+  const cleanPin = (roomPin || '').replace(/[\s-_]/g, '').toLowerCase();
 
-  // Sync real-time participants joining from /play across browser tabs / devices
+  // Register room with backend on mount or whenever PIN/Batch changes
   useEffect(() => {
-    const handleStorageChange = () => {
+    if (cleanPin) {
+      fetch('/api/quiz/room/register', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          pin: cleanPin,
+          title: currentBatch.name || eventName,
+          batchId: selectedBatchId
+        })
+      }).catch((err) => console.warn('Room register notice:', err));
+    }
+  }, [cleanPin, currentBatch.name, eventName, selectedBatchId]);
+
+  // Sync real-time participants joining from /play across browser tabs & phones
+  useEffect(() => {
+    const syncPlayers = async () => {
+      // 1. Fetch from network server room
+      if (cleanPin) {
+        try {
+          const res = await fetch(`/api/quiz/room/${cleanPin}`);
+          if (res.ok) {
+            const data = await res.json();
+            if (data && Array.isArray(data.players)) {
+              const remotePlayers: LobbyPlayer[] = data.players.filter(isRealParticipant);
+              if (phase === 'lobby') {
+                setPlayers((prev) => {
+                  const map = new Map<string, LobbyPlayer>();
+                  remotePlayers.forEach((p) => map.set(p.name.toLowerCase(), p));
+                  prev.forEach((p) => {
+                    if (!map.has(p.name.toLowerCase())) map.set(p.name.toLowerCase(), p);
+                  });
+                  const merged = Array.from(map.values());
+                  localStorage.setItem('cmrtc_live_lobby_players', JSON.stringify(merged));
+                  return merged;
+                });
+              } else {
+                if (typeof data.answeredCount === 'number') {
+                  setAnsweredCount(data.answeredCount);
+                }
+                if (remotePlayers.length > 0) {
+                  setLeaderboardScores((prev) => {
+                    const merged = remotePlayers.map((rp: any) => {
+                      const ex = prev.find((p) => p.name.toLowerCase() === rp.name.toLowerCase());
+                      return {
+                        name: rp.name,
+                        branch: rp.branch,
+                        score: Math.max(rp.score || 0, ex?.score || 0),
+                        streak: Math.max(rp.streak || 0, ex?.streak || 0),
+                        avatar: rp.avatar || '⚡'
+                      };
+                    });
+                    merged.sort((a: any, b: any) => b.score - a.score);
+                    localStorage.setItem('cmrtc_live_tournament_scores', JSON.stringify(merged));
+                    return merged;
+                  });
+                }
+              }
+            }
+          }
+        } catch {}
+      }
+
+      // 2. Also read localStorage for same-browser events
       try {
         const saved = localStorage.getItem('cmrtc_live_lobby_players');
         if (saved) {
           const parsed = JSON.parse(saved);
-          if (Array.isArray(parsed)) {
-            setPlayers(parsed.filter(isRealParticipant));
-            return;
+          if (Array.isArray(parsed) && phase === 'lobby') {
+            const valid = parsed.filter(isRealParticipant);
+            setPlayers((prev) => (valid.length > prev.length ? valid : prev));
           }
         }
-        setPlayers([]);
-      } catch {
-        setPlayers([]);
-      }
+      } catch {}
     };
-    window.addEventListener('storage', handleStorageChange);
-    const pollInterval = setInterval(handleStorageChange, 1000);
+
+    window.addEventListener('storage', syncPlayers);
+    const pollInterval = setInterval(syncPlayers, 1000);
     return () => {
-      window.removeEventListener('storage', handleStorageChange);
+      window.removeEventListener('storage', syncPlayers);
       clearInterval(pollInterval);
     };
-  }, []);
+  }, [cleanPin, phase]);
 
   // Admin Lobby Controls
   const clearLobby = () => {
@@ -126,6 +187,9 @@ export const HostGamePage: React.FC = () => {
     setPlayers([]);
     localStorage.removeItem('cmrtc_live_lobby_players');
     localStorage.removeItem('cmrtc_live_tournament_scores');
+    if (cleanPin) {
+      fetch(`/api/quiz/room/${cleanPin}/clear`, { method: 'POST' }).catch(() => {});
+    }
     window.dispatchEvent(new Event('storage'));
   };
 
@@ -207,6 +271,16 @@ export const HostGamePage: React.FC = () => {
       return;
     }
     sounds.playPop();
+
+    // Broadcast state to room so joined phones launch quiz synchronously
+    if (cleanPin) {
+      fetch(`/api/quiz/room/${cleanPin}/state`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ status: 'question', currentQuestion: 0 })
+      }).catch(() => {});
+    }
+
     setLeaderboardScores(
       players.map((p) => ({
         name: p.name,
@@ -223,6 +297,14 @@ export const HostGamePage: React.FC = () => {
   const handleRevealBreakdown = () => {
     if (timerRef.current) clearInterval(timerRef.current);
     sounds.playCorrect();
+
+    if (cleanPin) {
+      fetch(`/api/quiz/room/${cleanPin}/state`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ status: 'breakdown', currentQuestion: currentIndex })
+      }).catch(() => {});
+    }
 
     // Dynamically calculate and sort points so the right-side leaderboard updates immediately
     setLeaderboardScores((prev) => {
@@ -262,6 +344,14 @@ export const HostGamePage: React.FC = () => {
 
   const handleShowLeaderboard = () => {
     sounds.playPop();
+    if (cleanPin) {
+      fetch(`/api/quiz/room/${cleanPin}/state`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ status: 'leaderboard', currentQuestion: currentIndex })
+      }).catch(() => {});
+    }
+
     // Slightly randomize scores to show dynamic stage movement
     setLeaderboardScores((prev) =>
       [...prev].map((p, idx) => ({
@@ -275,9 +365,24 @@ export const HostGamePage: React.FC = () => {
   const handleNextOrFinish = () => {
     sounds.playPop();
     if (currentIndex + 1 < activeQuestions.length) {
-      setCurrentIndex((prev) => prev + 1);
+      const nextIdx = currentIndex + 1;
+      setCurrentIndex(nextIdx);
+      if (cleanPin) {
+        fetch(`/api/quiz/room/${cleanPin}/state`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ status: 'question', currentQuestion: nextIdx })
+        }).catch(() => {});
+      }
       setPhase('question');
     } else {
+      if (cleanPin) {
+        fetch(`/api/quiz/room/${cleanPin}/state`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ status: 'ended' })
+        }).catch(() => {});
+      }
       sounds.playVictory();
       confetti({
         particleCount: 150,

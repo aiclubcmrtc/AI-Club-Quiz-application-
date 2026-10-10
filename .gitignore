@@ -1,4 +1,4 @@
-cat > .gitignore << 'EOF'
+@"
 node_modules/
 dist/
 build/
@@ -6,4 +6,4 @@ build/
 .env.*
 *.tsbuildinfo
 .DS_Store
-EOF
+"@ | Out-File -Encoding ascii .gitignore
