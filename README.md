@@ -63,14 +63,6 @@ Once running, your terminal will display:
 
 ---
 
-## 🔐 Admin Login & Confidential Batches
-
-| Role | Username / Email | Password |
-| :--- | :--- | :--- |
-| **President (Master Admin)** | `president@cmrtc.ac.in` | `admin123` |
-| **Faculty Coordinator** | `faculty@cmrtc.ac.in` | `admin123` |
-| **Technical Lead** | `techlead@cmrtc.ac.in` | `admin123` |
-
 ### Multi-Round Batches System:
 - **Round 1**: Screening Round (15 Core CS & AI fundamentals)
 - **Round 2**: Technical Diagram Round (AI architecture & flowchart questions)
