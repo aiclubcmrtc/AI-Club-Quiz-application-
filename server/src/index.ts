@@ -87,10 +87,25 @@ app.get('*', (req, res, next) => {
   });
 });
 
-app.listen(PORT, () => {
-  console.log(`====================================================`);
-  console.log(`🛡️  SentinelOps AI Command Engine API Server v3.2`);
-  console.log(`📡  Listening on port http://localhost:${PORT}`);
-  console.log(`🌐  API root: http://localhost:${PORT}/api/healthz`);
-  console.log(`====================================================`);
+const PORTS = [5000, 5173];
+
+PORTS.forEach((p) => {
+  try {
+    const serverInstance = app.listen(p, '0.0.0.0', () => {
+      console.log(`====================================================`);
+      console.log(`🛡️  AI CLUB CMRTC Unified Server Live`);
+      console.log(`📡  Listening directly on http://0.0.0.0:${p}`);
+      console.log(`🌐  Quiz API & Web App ready on port ${p}`);
+      console.log(`====================================================`);
+    });
+    serverInstance.on('error', (err: any) => {
+      if (err.code === 'EADDRINUSE') {
+        console.warn(`[Port ${p}] In use by another service, fallback active.`);
+      } else {
+        console.error(`[Port ${p}] Error:`, err);
+      }
+    });
+  } catch (err) {
+    console.warn(`Could not start port ${p}:`, err);
+  }
 });

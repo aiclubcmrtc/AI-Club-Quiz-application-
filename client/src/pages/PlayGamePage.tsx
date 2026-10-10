@@ -271,21 +271,32 @@ export const PlayGamePage: React.FC = () => {
           avatar: avatar
         })
       });
-      const data = await res.json();
-      if (!res.ok || data.error) {
-        setJoinError(data.error || `Room code "${pin}" not found. Please verify the code displayed on the auditorium screen.`);
+
+      let data: any = null;
+      try {
+        data = await res.json();
+      } catch (parseErr) {
+        console.warn('Non-JSON response:', parseErr);
+      }
+
+      if (!res.ok) {
+        if (data && data.error) {
+          setJoinError(data.error);
+        } else {
+          setJoinError(`Room code "${pin}" is not currently active on the host projector screen.`);
+        }
         return;
       }
+
       if (data && data.player) {
         setPlayerId(data.player.id);
       }
+      setJoinError('');
     } catch (err) {
-      console.warn('Network join note: fallback to local storage', err);
-      setJoinError('Cannot connect to quiz server. Please make sure your phone is connected to the same Wi-Fi network.');
-      return;
+      console.warn('Network join note: proceeding with local session fallback', err);
+      // Do not block student from playing if local Wi-Fi router blocks peer connections
+      setJoinError('');
     }
-
-    setJoinError('');
 
     // 2. Register student in live lobby storage so they appear on Auditorium Host Projector
     try {
