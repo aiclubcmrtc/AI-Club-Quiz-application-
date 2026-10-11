@@ -18,7 +18,8 @@ import {
   ChevronRight,
   Trash2,
   UserPlus,
-  ArrowRight
+  ArrowRight,
+  Square
 } from 'lucide-react';
 import confetti from 'canvas-confetti';
 import { SAMPLE_QUIZZES, Question, CHOICE_ICONS, CHOICE_COLORS } from '../data/quizData';
@@ -92,6 +93,9 @@ export const HostGamePage: React.FC = () => {
     { name: string; branch: string; score: number; streak: number; avatar: string }[]
   >([]);
 
+  const [liveDistribution, setLiveDistribution] = useState<number[]>([0, 0, 0, 0]);
+  const [showDistribution, setShowDistribution] = useState<boolean>(true);
+
   const timerRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const currentQ = activeQuestions[currentIndex] || activeQuestions[0];
   const cleanPin = (roomPin || '').replace(/[\s-_]/g, '').toLowerCase();
@@ -120,35 +124,41 @@ export const HostGamePage: React.FC = () => {
           const res = await fetch(`/api/quiz/room/${cleanPin}`);
           if (res.ok) {
             const data = await res.json();
-            if (data && Array.isArray(data.players)) {
-              const remotePlayers: LobbyPlayer[] = data.players.filter(isRealParticipant);
-              if (phase === 'lobby') {
-                setPlayers(remotePlayers);
-                try {
-                  localStorage.setItem('cmrtc_live_lobby_players', JSON.stringify(remotePlayers));
-                } catch {}
-              } else {
-                if (typeof data.answeredCount === 'number') {
-                  setAnsweredCount(data.answeredCount);
-                }
-                if (remotePlayers.length > 0) {
-                  setLeaderboardScores((prev) => {
-                    const merged = remotePlayers.map((rp: any) => {
-                      const ex = prev.find((p) => p.name.toLowerCase() === rp.name.toLowerCase());
-                      return {
+            if (data) {
+              if (data.optionDistribution && Array.isArray(data.optionDistribution[currentIndex])) {
+                setLiveDistribution(data.optionDistribution[currentIndex]);
+              }
+              if (Array.isArray(data.players)) {
+                const remotePlayers: LobbyPlayer[] = data.players.filter(isRealParticipant);
+                if (phase === 'lobby') {
+                  setPlayers(remotePlayers);
+                  try {
+                    localStorage.setItem('cmrtc_live_lobby_players', JSON.stringify(remotePlayers));
+                  } catch {}
+                } else {
+                  if (typeof data.answeredCount === 'number') {
+                    setAnsweredCount(data.answeredCount);
+                  }
+                  // CASE 1: When all participants entered their answer!
+                  if (phase === 'question') {
+                    if (
+                      data.status === 'breakdown' ||
+                      (remotePlayers.length > 0 && typeof data.answeredCount === 'number' && data.answeredCount >= remotePlayers.length)
+                    ) {
+                      handleRevealBreakdown();
+                    }
+                  }
+                  if (remotePlayers.length > 0) {
+                    setLeaderboardScores(
+                      remotePlayers.map((rp: any) => ({
                         name: rp.name,
                         branch: rp.branch,
-                        score: Math.max(rp.score || 0, ex?.score || 0),
-                        streak: Math.max(rp.streak || 0, ex?.streak || 0),
+                        score: rp.score || 0,
+                        streak: rp.streak || 0,
                         avatar: rp.avatar || '⚡'
-                      };
-                    });
-                    merged.sort((a: any, b: any) => b.score - a.score);
-                    try {
-                      localStorage.setItem('cmrtc_live_tournament_scores', JSON.stringify(merged));
-                    } catch {}
-                    return merged;
-                  });
+                      })).sort((a: any, b: any) => (b.score || 0) - (a.score || 0))
+                    );
+                  }
                 }
               }
             }
@@ -169,6 +179,7 @@ export const HostGamePage: React.FC = () => {
   const clearLobby = () => {
     sounds.playPop();
     setPlayers([]);
+    setLiveDistribution([0, 0, 0, 0]);
     localStorage.removeItem('cmrtc_live_lobby_players');
     localStorage.removeItem('cmrtc_live_tournament_scores');
     if (cleanPin) {
@@ -201,37 +212,19 @@ export const HostGamePage: React.FC = () => {
     localStorage.setItem('cmrtc_live_lobby_players', JSON.stringify(updated));
   };
 
-  // Question countdown - Questions change ONLY after all participants mark answers OR time ends
+  // Question countdown - Questions change ONLY when all participants mark answers (Case 1) OR admin ends question / timer ends (Case 2)
   useEffect(() => {
     if (phase === 'question') {
       const qDuration = currentQ.timeLimit || 15;
       setTimeLeft(qDuration);
       setAnsweredCount(0);
 
-      // Simulate student answers marking in real-time
-      const answerInterval = Math.max(600, Math.floor((qDuration * 1000) / (players.length + 2)));
-      const answerSim = setInterval(() => {
-        setAnsweredCount((prev) => {
-          const next = prev + 1;
-          if (next >= players.length) {
-            // ALL PARTICIPANTS HAVE MARKED PRESENT ANSWER!
-            clearInterval(answerSim);
-            setTimeout(() => {
-              handleRevealBreakdown();
-            }, 750);
-            return players.length;
-          }
-          return next;
-        });
-      }, answerInterval);
-
       if (timerRef.current) clearInterval(timerRef.current);
       timerRef.current = setInterval(() => {
         setTimeLeft((prev) => {
           if (prev <= 1) {
-            // TIME RAN OUT!
+            // CASE 2: Official Question Time Ran Out!
             clearInterval(timerRef.current!);
-            clearInterval(answerSim);
             handleRevealBreakdown();
             return 0;
           }
@@ -243,11 +236,10 @@ export const HostGamePage: React.FC = () => {
       }, 1000);
 
       return () => {
-        clearInterval(answerSim);
         if (timerRef.current) clearInterval(timerRef.current);
       };
     }
-  }, [phase, currentIndex, players.length]);
+  }, [phase, currentIndex]);
 
   const handleStartFromLobby = () => {
     if (players.length === 0) {
@@ -278,6 +270,7 @@ export const HostGamePage: React.FC = () => {
         avatar: p.avatar
       }))
     );
+    setLiveDistribution([0, 0, 0, 0]);
     setCurrentIndex(0);
     setPhase('question');
   };
@@ -292,44 +285,31 @@ export const HostGamePage: React.FC = () => {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ status: 'breakdown', currentQuestion: currentIndex })
       }).catch(() => {});
+
+      // Fetch genuine contestant scores and live option distribution from server: ZERO random numbers!
+      fetch(`/api/quiz/room/${cleanPin}`)
+        .then((res) => res.json())
+        .then((data) => {
+          if (data) {
+            if (data.optionDistribution && Array.isArray(data.optionDistribution[currentIndex])) {
+              setLiveDistribution(data.optionDistribution[currentIndex]);
+            }
+            if (Array.isArray(data.players) && data.players.length > 0) {
+              const genuineScores = [...data.players].sort((a: any, b: any) => (b.score || 0) - (a.score || 0));
+              setLeaderboardScores(genuineScores);
+              try {
+                localStorage.setItem('cmrtc_live_tournament_scores', JSON.stringify(genuineScores));
+                window.dispatchEvent(new Event('storage'));
+              } catch {}
+            }
+          }
+        })
+        .catch(() => {});
     }
     try {
       localStorage.setItem('cmrtc_room_state_sync', JSON.stringify({ status: 'breakdown', currentQuestion: currentIndex, timestamp: Date.now() }));
       window.dispatchEvent(new Event('storage'));
     } catch {}
-
-    // Dynamically calculate and sort points so the right-side leaderboard updates immediately
-    setLeaderboardScores((prev) => {
-      const base = prev.length > 0 ? prev : players.map((p) => ({
-        name: p.name,
-        branch: p.branch,
-        score: 0,
-        streak: 0,
-        avatar: p.avatar
-      }));
-
-      if (base.length === 0) {
-        return [];
-      }
-
-      const updated = base.map((p, idx) => {
-        // Top contestants gain points
-        const isCorrect = idx % 3 !== 2;
-        const pts = isCorrect ? Math.floor(750 + Math.random() * 230) : 0;
-        return {
-          ...p,
-          score: p.score + pts,
-          streak: isCorrect ? p.streak + 1 : 0
-        };
-      }).sort((a, b) => b.score - a.score);
-
-      try {
-        localStorage.setItem('cmrtc_live_tournament_scores', JSON.stringify(updated));
-        window.dispatchEvent(new Event('storage'));
-      } catch {}
-
-      return updated;
-    });
 
     setPhase('breakdown');
   };
@@ -342,19 +322,23 @@ export const HostGamePage: React.FC = () => {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ status: 'leaderboard', currentQuestion: currentIndex })
       }).catch(() => {});
+
+      // Fetch genuine scores: ZERO random points!
+      fetch(`/api/quiz/room/${cleanPin}`)
+        .then((res) => res.json())
+        .then((data) => {
+          if (data && Array.isArray(data.players) && data.players.length > 0) {
+            const genuineScores = [...data.players].sort((a: any, b: any) => (b.score || 0) - (a.score || 0));
+            setLeaderboardScores(genuineScores);
+          }
+        })
+        .catch(() => {});
     }
     try {
       localStorage.setItem('cmrtc_room_state_sync', JSON.stringify({ status: 'leaderboard', currentQuestion: currentIndex, timestamp: Date.now() }));
       window.dispatchEvent(new Event('storage'));
     } catch {}
 
-    // Slightly randomize scores to show dynamic stage movement
-    setLeaderboardScores((prev) =>
-      [...prev].map((p, idx) => ({
-        ...p,
-        score: p.score + (idx === 0 ? 980 : idx === 1 ? 920 : idx === 2 ? 880 : 810)
-      })).sort((a, b) => b.score - a.score)
-    );
     setPhase('leaderboard');
   };
 
@@ -363,6 +347,7 @@ export const HostGamePage: React.FC = () => {
     if (currentIndex + 1 < activeQuestions.length) {
       const nextIdx = currentIndex + 1;
       setCurrentIndex(nextIdx);
+      setLiveDistribution([0, 0, 0, 0]);
       if (cleanPin) {
         fetch(`/api/quiz/room/${cleanPin}/state`, {
           method: 'POST',
@@ -690,10 +675,11 @@ export const HostGamePage: React.FC = () => {
               </span>
               <button
                 onClick={handleRevealBreakdown}
-                className="btn-secondary px-3 py-1.5 text-xs flex items-center gap-1.5"
+                className="px-3.5 py-1.5 rounded-xl bg-amber-500 hover:bg-amber-600 text-white font-bold text-xs flex items-center gap-1.5 shadow-sm transition-all cursor-pointer"
+                title="End Question immediately and reveal answers (Case 2)"
               >
-                <SkipForward className="w-3.5 h-3.5" />
-                Skip Timer
+                <Square className="w-3.5 h-3.5 fill-current" />
+                End Question Now
               </button>
             </div>
           </div>
@@ -838,34 +824,75 @@ export const HostGamePage: React.FC = () => {
                 </div>
 
                 {/* Answer Histogram Bars */}
-                <div className="pt-4 border-t border-blue-100">
-                  <div className="text-xs font-bold text-slate-500 uppercase tracking-wider mb-4 text-center">
-                    Auditorium Response Distribution
-                  </div>
-                  <div className="grid grid-cols-4 gap-3 items-end h-40">
-                    {currentQ.options.map((opt, idx) => {
-                      const isCorrect = idx === currentQ.correctIndex;
-                      const mockCount = isCorrect ? Math.max(9, players.length - 2) : idx === 1 ? 2 : idx === 2 ? 1 : 0;
-                      const heightPct = Math.round((mockCount / Math.max(1, players.length || 10)) * 100);
-                      return (
-                        <div key={idx} className="flex flex-col items-center gap-2 h-full justify-end">
-                          <span className="font-mono text-xs font-bold text-slate-800">{mockCount}</span>
-                          <div className="w-full max-w-[4rem] bg-blue-50 border border-blue-100 rounded-t-xl overflow-hidden flex items-end">
-                            <div
-                              className={`w-full rounded-t-xl transition-all duration-1000 ${
-                                isCorrect ? 'bg-emerald-500 shadow-md shadow-emerald-500/30' : 'bg-slate-300'
-                              }`}
-                              style={{ height: `${Math.max(14, heightPct)}%` }}
-                            />
+                {showDistribution ? (
+                  <div className="pt-4 border-t border-blue-100">
+                    <div className="flex items-center justify-between mb-3 px-1">
+                      <div className="flex items-center gap-2">
+                        <span className="w-2 h-2 rounded-full bg-emerald-500 animate-pulse"></span>
+                        <span className="text-xs font-bold text-slate-600 uppercase tracking-wider">
+                          Live Auditorium Response Distribution
+                        </span>
+                        <span className="text-[11px] font-semibold text-slate-400">
+                          ({liveDistribution.reduce((a, b) => a + b, 0)} {liveDistribution.reduce((a, b) => a + b, 0) === 1 ? 'vote' : 'votes'})
+                        </span>
+                      </div>
+                      <button
+                        onClick={() => setShowDistribution(false)}
+                        className="text-[11px] font-semibold text-slate-400 hover:text-slate-600 px-2.5 py-0.5 rounded-md hover:bg-slate-100 transition-colors"
+                        title="Hide response distribution"
+                      >
+                        Hide
+                      </button>
+                    </div>
+
+                    <div className="grid grid-cols-4 gap-3 items-end h-44 pb-1">
+                      {currentQ.options.map((opt, idx) => {
+                        const isCorrect = idx === currentQ.correctIndex;
+                        const actualCount = liveDistribution[idx] || 0;
+                        const totalAudienceVotes = liveDistribution.reduce((a, b) => a + b, 0);
+                        const pct = totalAudienceVotes > 0 ? Math.round((actualCount / totalAudienceVotes) * 100) : 0;
+                        const heightPct = actualCount > 0 ? Math.max(16, pct) : 6;
+                        return (
+                          <div key={idx} className="flex flex-col items-center gap-1.5 h-full justify-end">
+                            <div className="text-center">
+                              <span className="font-mono text-xs font-bold text-slate-800 block">{actualCount}</span>
+                              <span className="text-[10px] font-medium text-slate-400 block">{pct}%</span>
+                            </div>
+                            <div className="w-full max-w-[4.2rem] bg-slate-100 border border-slate-200/80 rounded-t-xl overflow-hidden flex items-end h-28">
+                              <div
+                                className={`w-full rounded-t-xl transition-all duration-700 ${
+                                  isCorrect
+                                    ? 'bg-gradient-to-t from-emerald-600 to-emerald-400 shadow-md shadow-emerald-500/25'
+                                    : actualCount > 0
+                                    ? 'bg-gradient-to-t from-blue-500 to-blue-400 shadow-sm'
+                                    : 'bg-slate-200/60'
+                                }`}
+                                style={{ height: `${heightPct}%` }}
+                              />
+                            </div>
+                            <div className="flex items-center gap-1">
+                              <span className="font-bold text-xs text-slate-700">
+                                {CHOICE_ICONS[idx]}
+                              </span>
+                              {isCorrect && (
+                                <CheckCircle2 className="w-3 h-3 text-emerald-600" />
+                              )}
+                            </div>
                           </div>
-                          <span className="font-bold text-xs truncate max-w-full text-slate-700">
-                            {CHOICE_ICONS[idx]}
-                          </span>
-                        </div>
-                      );
-                    })}
+                        );
+                      })}
+                    </div>
                   </div>
-                </div>
+                ) : (
+                  <div className="pt-3 border-t border-blue-100 flex justify-center">
+                    <button
+                      onClick={() => setShowDistribution(true)}
+                      className="text-xs font-semibold text-blue-600 hover:text-blue-800 px-3 py-1 rounded-full bg-blue-50 border border-blue-200 hover:bg-blue-100 transition-colors flex items-center gap-1.5"
+                    >
+                      <span>Show Live Response Distribution</span>
+                    </button>
+                  </div>
+                )}
 
                 {/* 4 Choices Grid with correct mark */}
                 <div className="grid grid-cols-1 sm:grid-cols-2 gap-2.5 pt-2">

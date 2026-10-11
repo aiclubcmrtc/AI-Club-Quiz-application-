@@ -112,7 +112,6 @@ export const PlayGamePage: React.FC = () => {
   const [leaderboard, setLeaderboard] = useState<PlayLeaderboardEntry[]>([]);
 
   const timerRef = useRef<ReturnType<typeof setInterval> | null>(null);
-  const peerSimRef = useRef<ReturnType<typeof setInterval> | null>(null);
 
   const avatars = ['🤖', '⚡', '🧠', '🚀', '🛡️', '🔥', '✨', '💻'];
   const branches = [
@@ -126,51 +125,54 @@ export const PlayGamePage: React.FC = () => {
   ];
 
   const currentQ: Question = activeQuestions[currentIndex] || activeQuestions[0];
-  const totalContestants = leaderboard.length > 0 ? leaderboard.length : 6;
+  const totalContestants = leaderboard.length > 0 ? leaderboard.length : 1;
 
-  // Unified Question Progression:
-  // Case 1: Time we gave for that question runs out
-  // Case 2: Everyone marks the question
+  // Question Countdown on Participant Phone
+  // Timer runs down; if participant never marks before time expires, they receive 0 points and move to waiting_others
   useEffect(() => {
     if (phase === 'playing' || phase === 'waiting_others') {
       const qDuration = currentQ.timeLimit || 15;
-
-      // 1. Peer Marking Simulator (Simulates other students marking in real time)
-      if (peerSimRef.current) clearInterval(peerSimRef.current);
-      const peerCount = Math.max(1, totalContestants - 1);
-      const markInterval = Math.max(750, Math.floor((qDuration * 850) / peerCount));
-
-      peerSimRef.current = setInterval(() => {
-        setMarkedCount((prev) => {
-          const maxAllowed = userSelectionRef.current.hasMarked ? totalContestants : totalContestants - 1;
-          const next = prev + 1;
-          if (next >= totalContestants) {
-            // CASE 2 SATISFIED: EVERYONE HAS MARKED THE QUESTION!
-            clearInterval(peerSimRef.current!);
-            if (timerRef.current) clearInterval(timerRef.current);
-            setTimeout(() => {
-              triggerQuestionConclude('all_marked');
-            }, 350);
-            return totalContestants;
-          }
-          if (next > maxAllowed) {
-            return maxAllowed;
-          }
-          return next;
-        });
-      }, markInterval);
-
-      // 2. Question Countdown Timer (Case 1: Time given for question)
       if (timerRef.current) clearInterval(timerRef.current);
       timerRef.current = setInterval(() => {
         setTimeLeft((prev) => {
           if (prev <= 1) {
-            // CASE 1 SATISFIED: TIME WE GAVE FOR THIS QUESTION RAN OUT!
-            clearInterval(timerRef.current!);
-            if (peerSimRef.current) clearInterval(peerSimRef.current);
-            setTimeout(() => {
-              triggerQuestionConclude('timer');
-            }, 0);
+            // Time expired on participant device before marking
+            if (phase === 'playing' && !userSelectionRef.current.hasMarked) {
+              userSelectionRef.current = {
+                hasMarked: true,
+                selectedOption: -1,
+                isCorrect: false,
+                points: 0,
+                timeTaken: qDuration
+              };
+              setSelectedOption(-1);
+              setIsCorrect(false);
+              setPointsGained(0);
+              setUserHasMarked(true);
+
+              // Post 0-point time-expired answer to server
+              const cleanPin = (pin || '').replace(/[\s-_]/g, '').toLowerCase();
+              if (cleanPin) {
+                fetch(`/api/quiz/room/${cleanPin}/answer`, {
+                  method: 'POST',
+                  headers: { 'Content-Type': 'application/json' },
+                  body: JSON.stringify({
+                    playerId: playerId || nickname,
+                    points: 0,
+                    isCorrect: false,
+                    questionIndex: currentIndex
+                  })
+                })
+                .then((res) => res.json())
+                .then((data) => {
+                  if (data && data.status === 'breakdown') {
+                    triggerQuestionConclude('all_marked');
+                  }
+                })
+                .catch(() => {});
+              }
+              setPhase('waiting_others');
+            }
             return 0;
           }
           if (prev <= 4) {
@@ -182,10 +184,9 @@ export const PlayGamePage: React.FC = () => {
 
       return () => {
         if (timerRef.current) clearInterval(timerRef.current);
-        if (peerSimRef.current) clearInterval(peerSimRef.current);
       };
     }
-  }, [phase, currentIndex, totalContestants]);
+  }, [phase, currentIndex]);
 
   // Strict Host Pacing & Live Leaderboard in phase === 'answered'
   // Participants remain on the leaderboard screen ONLY until the Host explicitly clicks "Next Question"
@@ -299,6 +300,7 @@ export const PlayGamePage: React.FC = () => {
   }, [phase, currentIndex, isCorrect, pin]);
 
   // While question is active (playing or waiting_others), synchronize with Host stage state
+  // Concludes question ONLY on Case 1 (everyone answered) or Case 2 (admin ended question)
   useEffect(() => {
     if (phase === 'playing' || phase === 'waiting_others') {
       const cleanPin = (pin || '').replace(/[\s-_]/g, '').toLowerCase();
@@ -310,9 +312,14 @@ export const PlayGamePage: React.FC = () => {
           .then((data) => {
             if (!data) return;
 
-            // Host revealed breakdown or leaderboard on auditorium screen -> conclude question
+            // Update live real-time answered count from server
+            if (typeof data.answeredCount === 'number') {
+              setMarkedCount(data.answeredCount);
+            }
+
+            // CASE 1 (Everyone entered answer) OR CASE 2 (Admin ended question):
             if (data.status === 'breakdown' || data.status === 'leaderboard') {
-              triggerQuestionConclude('timer');
+              triggerQuestionConclude(data.answeredCount >= (data.players?.length || 1) ? 'all_marked' : 'timer');
             } else if (
               data.status === 'question' &&
               typeof data.currentQuestion === 'number' &&
@@ -331,8 +338,38 @@ export const PlayGamePage: React.FC = () => {
           .catch(() => {});
       };
 
-      const poll = setInterval(checkStageSync, 1000);
-      return () => clearInterval(poll);
+      // Also listen to storage events for same-browser testing
+      const handleStorageUpdate = (e: StorageEvent) => {
+        if (e.key === 'cmrtc_room_state_sync' && e.newValue) {
+          try {
+            const syncData = JSON.parse(e.newValue);
+            if (syncData.status === 'breakdown' || syncData.status === 'leaderboard') {
+              triggerQuestionConclude('timer');
+            } else if (
+              syncData.status === 'question' &&
+              typeof syncData.currentQuestion === 'number' &&
+              syncData.currentQuestion > currentIndex
+            ) {
+              sounds.playPop();
+              const nextIdx = syncData.currentQuestion;
+              setCurrentIndex(nextIdx);
+              resetForNewQuestion(activeQuestions[nextIdx]?.timeLimit || 15);
+              setPhase('playing');
+            } else if (syncData.status === 'ended') {
+              sounds.playVictory();
+              setPhase('finished');
+            }
+          } catch {}
+        }
+      };
+
+      window.addEventListener('storage', handleStorageUpdate);
+      checkStageSync();
+      const poll = setInterval(checkStageSync, 600);
+      return () => {
+        window.removeEventListener('storage', handleStorageUpdate);
+        clearInterval(poll);
+      };
     }
   }, [phase, currentIndex, pin]);
 
@@ -549,17 +586,11 @@ export const PlayGamePage: React.FC = () => {
           };
         }
 
-        // Live scoring for other real peer participants answering this question:
-        const peerCorrect = Math.random() < 0.72;
-        const peerSpeed = 0.52 + Math.random() * 0.44;
-        const peerStreak = peerCorrect ? p.streak + 1 : 0;
-        const peerPoints = peerCorrect ? Math.round(1000 * peerSpeed) + peerStreak * 50 : 0;
-
+        // For other participants: ZERO FAKE SCORING!
+        // Their genuine scores are tracked on the server and synced over the network
         return {
           ...p,
-          score: p.score + peerPoints,
-          streak: peerStreak,
-          lastDelta: peerPoints
+          lastDelta: 0
         };
       });
 
@@ -634,18 +665,19 @@ export const PlayGamePage: React.FC = () => {
 
   const triggerQuestionConclude = (reason: 'timer' | 'all_marked') => {
     if (timerRef.current) clearInterval(timerRef.current);
-    if (peerSimRef.current) clearInterval(peerSimRef.current);
     setConcludeReason(reason);
 
     // Read synchronously from userSelectionRef to guarantee mobile taps are NEVER missed
     const sel = userSelectionRef.current;
-    const didUserMark = sel.hasMarked || userHasMarked || (selectedOption !== null && selectedOption !== -1);
+    const didUserMark = (sel.hasMarked && sel.selectedOption !== null && sel.selectedOption !== -1) ||
+                        (userHasMarked && selectedOption !== null && selectedOption !== -1);
 
     let earnedPts = 0;
     let earnedCorrect = false;
 
-    // Only if participant genuinely never marked any option before timer ended, mark as time expired
+    // RULE: Exactly 0 points for participants who answered wrong or whose time ran out!
     if (!didUserMark) {
+      // Time expired / Did not answer in time: 0 points!
       setSelectedOption(-1);
       setIsCorrect(false);
       setPointsGained(0);
@@ -653,10 +685,11 @@ export const PlayGamePage: React.FC = () => {
       earnedPts = 0;
       earnedCorrect = false;
     } else {
-      // Participant answered in time! Award full points and keep their chosen answer
+      // Participant marked an answer in time:
       const opt = sel.hasMarked ? sel.selectedOption : selectedOption;
       const correct = sel.hasMarked ? sel.isCorrect : isCorrect;
-      const pts = sel.hasMarked ? sel.points : pointsGained;
+      // If wrong answer: 0 points! If correct: genuine speed-based points
+      const pts = correct ? (sel.hasMarked ? sel.points : pointsGained) : 0;
 
       setSelectedOption(opt);
       setIsCorrect(correct);
@@ -706,18 +739,27 @@ export const PlayGamePage: React.FC = () => {
     setPhase('playing');
   };
 
-  // Student selects an option: question changes ONLY on Case 1 (timer) or Case 2 (all mark)
+  // Student selects an option: question concludes ONLY on Case 1 (everyone answers) or Case 2 (admin ends question)
   const handleSelectOption = (index: number) => {
     if (phase !== 'playing' || selectedOption !== null) return;
 
-    sounds.playPop(); // Instant tap confirmation; result audio deferred to answer reveal screen
+    sounds.playPop(); // Instant tap confirmation
 
-    const timeTaken = (currentQ.timeLimit || 15) - timeLeft;
+    const timeLimit = currentQ.timeLimit || 15;
+    const timeTaken = timeLimit - timeLeft;
     const correct = index === currentQ.correctIndex;
+
+    // STRICT SCORING:
+    // - Wrong answer: EXACTLY 0 points!
+    // - Correct answer: As fast as the participant enters the answer, they get more score!
     let points = 0;
     if (correct) {
-      const speedFactor = Math.max(0.4, timeLeft / (currentQ.timeLimit || 15));
-      points = Math.round(1000 * speedFactor) + streak * 50;
+      const speedRatio = Math.max(0, Math.min(1, timeLeft / timeLimit));
+      const basePoints = 500 + Math.round(500 * speedRatio);
+      const streakBonus = streak * 50;
+      points = basePoints + streakBonus;
+    } else {
+      points = 0; // Exactly 0 points for wrong answer
     }
 
     // 1. Immediately store selection synchronously in ref to prevent stale closures
@@ -735,7 +777,7 @@ export const PlayGamePage: React.FC = () => {
     setIsCorrect(correct);
     setPointsGained(points);
 
-    // 3. Post answer to backend room over network
+    // 3. Post genuine answer to backend room over network
     const cleanPin = (pin || '').replace(/[\s-_]/g, '').toLowerCase();
     if (cleanPin) {
       fetch(`/api/quiz/room/${cleanPin}/answer`, {
@@ -745,25 +787,28 @@ export const PlayGamePage: React.FC = () => {
           playerId: playerId || nickname,
           points,
           isCorrect: correct,
-          questionIndex: currentIndex
+          questionIndex: currentIndex,
+          optionIndex: index
         })
-      }).catch((err) => console.warn('Answer sync notice:', err));
+      })
+      .then((res) => res.json())
+      .then((data) => {
+        if (data) {
+          if (typeof data.answeredCount === 'number') {
+            setMarkedCount(data.answeredCount);
+          }
+          // CASE 1: If this answer completed the room for ALL participants, conclude!
+          if (data.status === 'breakdown') {
+            triggerQuestionConclude('all_marked');
+          }
+        }
+      })
+      .catch((err) => console.warn('Answer sync notice:', err));
     }
 
-    // Calculate new total marked count including current user
-    const updatedMarked = markedCount + 1;
-    setMarkedCount(updatedMarked);
-
-    // Check Case 2: Did this make EVERYONE finish marking the question?
-    if (updatedMarked >= totalContestants) {
-      // CASE 2 SATISFIED: EVERYONE HAS MARKED!
-      setTimeout(() => {
-        triggerQuestionConclude('all_marked');
-      }, 450);
-    } else {
-      // Still waiting for remaining peers OR for timer (Case 1)
-      setPhase('waiting_others');
-    }
+    // Move THIS student to waiting_others screen
+    // They wait for other participants to enter answers (Case 1) or admin to end question (Case 2)
+    setPhase('waiting_others');
   };
 
   return (
@@ -1062,29 +1107,29 @@ export const PlayGamePage: React.FC = () => {
 
           {/* 2 Tournament Conditions Status Cards */}
           <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 text-left">
-            {/* Case 1: Question Time */}
-            <div className="p-3.5 rounded-2xl bg-blue-50/70 border border-blue-200 space-y-1">
-              <div className="text-[10px] font-bold uppercase tracking-wider text-blue-600 flex items-center gap-1">
-                <span>⏱️</span> Case 1: Time Limit
+            {/* Case 1: Everyone Enters Answer */}
+            <div className="p-3.5 rounded-2xl bg-indigo-50/70 border border-indigo-200 space-y-1">
+              <div className="text-[10px] font-bold uppercase tracking-wider text-indigo-600 flex items-center gap-1">
+                <span>👥</span> Case 1: Everyone Answers
               </div>
-              <div className="font-display text-xl font-extrabold text-blue-900 font-mono">
-                {timeLeft}s
+              <div className="font-display text-xl font-extrabold text-indigo-900 font-mono">
+                {markedCount} Answered
               </div>
               <div className="text-[11px] text-slate-500">
-                Advances when timer reaches 0
+                Advances when all participants enter answers
               </div>
             </div>
 
-            {/* Case 2: Everyone Marks */}
-            <div className="p-3.5 rounded-2xl bg-indigo-50/70 border border-indigo-200 space-y-1">
-              <div className="text-[10px] font-bold uppercase tracking-wider text-indigo-600 flex items-center gap-1">
-                <span>👥</span> Case 2: Everyone Marks
+            {/* Case 2: Admin Ends Question */}
+            <div className="p-3.5 rounded-2xl bg-blue-50/70 border border-blue-200 space-y-1">
+              <div className="text-[10px] font-bold uppercase tracking-wider text-blue-600 flex items-center gap-1">
+                <span>🛡️</span> Case 2: Admin Ends Question
               </div>
-              <div className="font-display text-xl font-extrabold text-indigo-900 font-mono">
-                {markedCount} / {totalContestants}
+              <div className="font-display text-xl font-extrabold text-blue-900 font-mono">
+                {timeLeft}s remaining
               </div>
               <div className="text-[11px] text-slate-500">
-                Advances when all mark
+                Advances when Host ends question or time ends
               </div>
             </div>
           </div>
@@ -1094,19 +1139,19 @@ export const PlayGamePage: React.FC = () => {
             <div className="flex items-center justify-between text-xs font-semibold text-slate-600">
               <span>Auditorium Marked Progress</span>
               <span className="font-mono text-blue-700 font-bold">
-                {Math.round((markedCount / totalContestants) * 100)}%
+                {markedCount} submitted
               </span>
             </div>
             <div className="w-full bg-slate-100 rounded-full h-2.5 overflow-hidden border border-blue-100">
               <div
                 className="bg-blue-600 h-full rounded-full transition-all duration-500"
-                style={{ width: `${Math.min(100, Math.round((markedCount / totalContestants) * 100))}%` }}
+                style={{ width: `${Math.min(100, Math.max(15, Math.round((markedCount / Math.max(1, totalContestants)) * 100)))}%` }}
               />
             </div>
           </div>
 
           <div className="p-3 rounded-2xl bg-slate-50 border border-slate-200/70 text-[11px] text-slate-500">
-            🔒 <strong>Synchronized Arena</strong>: Manual skipping disabled. All students advance together in lockstep.
+            🔒 <strong>Synchronized Arena</strong>: Answers locked in. Question ends once everyone enters their answer or Host concludes.
           </div>
         </div>
       )}

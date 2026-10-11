@@ -20,6 +20,8 @@ export interface Room {
   currentQuestion: number;
   batchId?: string;
   answeredCount: number;
+  answeredPlayers: Record<number, string[]>;
+  optionDistribution: Record<number, number[]>;
   updatedAt: number;
 }
 
@@ -42,6 +44,8 @@ const getOrCreateRoom = (pin: string, title?: string): Room => {
       players: [],
       currentQuestion: 0,
       answeredCount: 0,
+      answeredPlayers: {},
+      optionDistribution: {},
       updatedAt: Date.now()
     };
   }
@@ -144,19 +148,56 @@ quizRouter.post('/room/:pin/answer', (req: Request, res: Response) => {
     return res.status(404).json({ error: 'Room not found.' });
   }
 
-  const { playerId, points, isCorrect, questionIndex } = req.body;
-  const player = room.players.find((p) => p.id === playerId);
+  const { playerId, points, isCorrect, questionIndex, optionIndex } = req.body;
+  const qIdx = typeof questionIndex === 'number' ? questionIndex : room.currentQuestion;
+
+  if (!room.answeredPlayers) room.answeredPlayers = {};
+  if (!room.answeredPlayers[qIdx]) room.answeredPlayers[qIdx] = [];
+  if (!room.optionDistribution) room.optionDistribution = {};
+  if (!room.optionDistribution[qIdx]) room.optionDistribution[qIdx] = [0, 0, 0, 0];
+
+  // Match player by ID or by nickname
+  const player = room.players.find(
+    (p) => p.id === playerId || p.name.toLowerCase() === (playerId || '').toLowerCase()
+  );
+
   if (player) {
-    if (player.lastAnsweredQuestion !== questionIndex) {
-      player.lastAnsweredQuestion = questionIndex;
-      player.score += points || 0;
+    const alreadyAnswered = room.answeredPlayers[qIdx].includes(player.id);
+    if (!alreadyAnswered) {
+      room.answeredPlayers[qIdx].push(player.id);
+      player.lastAnsweredQuestion = qIdx;
+
+      // Track genuine selected option distribution
+      if (typeof optionIndex === 'number' && optionIndex >= 0 && optionIndex < 4) {
+        room.optionDistribution[qIdx][optionIndex] = (room.optionDistribution[qIdx][optionIndex] || 0) + 1;
+      }
+
+      // STRICT SCORING: Exactly 0 points if wrong or no points. Points ONLY when genuinely correct!
+      const validPoints = isCorrect ? Math.max(0, points || 0) : 0;
+      player.score += validPoints;
       player.streak = isCorrect ? player.streak + 1 : 0;
-      room.answeredCount = (room.answeredCount || 0) + 1;
+      room.answeredCount = room.answeredPlayers[qIdx].length;
     }
   }
 
+  // CASE 1 SATISFIED: Every participant has entered their answer!
+  if (
+    room.players.length > 0 &&
+    room.answeredPlayers[qIdx].length >= room.players.length &&
+    room.status === 'question'
+  ) {
+    room.status = 'breakdown';
+  }
+
   room.updatedAt = Date.now();
-  res.json({ success: true, player, answeredCount: room.answeredCount });
+  res.json({
+    success: true,
+    player,
+    answeredCount: room.answeredPlayers[qIdx]?.length || room.answeredCount,
+    totalPlayers: room.players.length,
+    status: room.status,
+    distribution: room.optionDistribution[qIdx] || [0, 0, 0, 0]
+  });
 });
 
 // POST /api/quiz/room/:pin/state - Host updates phase and question index
@@ -169,6 +210,12 @@ quizRouter.post('/room/:pin/state', (req: Request, res: Response) => {
   if (typeof currentQuestion === 'number') {
     if (room.currentQuestion !== currentQuestion) {
       room.answeredCount = 0; // Reset marked count for new question
+      if (!room.answeredPlayers) room.answeredPlayers = {};
+      room.answeredPlayers[currentQuestion] = [];
+      if (!room.optionDistribution) room.optionDistribution = {};
+      if (!room.optionDistribution[currentQuestion]) {
+        room.optionDistribution[currentQuestion] = [0, 0, 0, 0];
+      }
     }
     room.currentQuestion = currentQuestion;
   }
@@ -186,6 +233,8 @@ quizRouter.post('/room/:pin/clear', (req: Request, res: Response) => {
     room.status = 'lobby';
     room.currentQuestion = 0;
     room.answeredCount = 0;
+    room.answeredPlayers = {};
+    room.optionDistribution = {};
     room.updatedAt = Date.now();
   }
   res.json({ success: true, room });

@@ -62,6 +62,7 @@ Once running, your terminal will display:
    - After each question, a **compact Live Leaderboard** displays on the right side of both the host projector and student mobile screens with real-time score updates, ranks, and streaks!
 
 
+
 ### Multi-Round Batches System:
 - **Round 1**: Screening Round (15 Core CS & AI fundamentals)
 - **Round 2**: Technical Diagram Round (AI architecture & flowchart questions)
