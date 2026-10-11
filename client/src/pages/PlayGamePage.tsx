@@ -79,7 +79,6 @@ export const PlayGamePage: React.FC = () => {
   const [markedCount, setMarkedCount] = useState(0);
   const [userHasMarked, setUserHasMarked] = useState(false);
   const [concludeReason, setConcludeReason] = useState<'timer' | 'all_marked' | null>(null);
-  const [autoAdvanceTimer, setAutoAdvanceTimer] = useState(5);
   const [playerId, setPlayerId] = useState<string>('');
 
   // Synchronous selection tracking to completely eliminate stale closure on mobile phones
@@ -114,7 +113,6 @@ export const PlayGamePage: React.FC = () => {
 
   const timerRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const peerSimRef = useRef<ReturnType<typeof setInterval> | null>(null);
-  const autoAdvanceRef = useRef<ReturnType<typeof setInterval> | null>(null);
 
   const avatars = ['🤖', '⚡', '🧠', '🚀', '🛡️', '🔥', '✨', '💻'];
   const branches = [
@@ -189,10 +187,11 @@ export const PlayGamePage: React.FC = () => {
     }
   }, [phase, currentIndex, totalContestants]);
 
-  // Auto-advance countdown & sound trigger on the answered/breakdown screen (along with leaderboard reveal)
+  // Strict Host Pacing & Live Leaderboard in phase === 'answered'
+  // Participants remain on the leaderboard screen ONLY until the Host explicitly clicks "Next Question"
   useEffect(() => {
     if (phase === 'answered') {
-      // Play the distinct sound for correct or incorrect answer upon answer & leaderboard reveal
+      // 1. Play the distinct sound for correct or incorrect answer upon answer & leaderboard reveal
       if (isCorrect) {
         sounds.playCorrect();
         confetti({
@@ -204,17 +203,24 @@ export const PlayGamePage: React.FC = () => {
         sounds.playIncorrect();
       }
 
-      // Fetch latest network room scores to update leaderboard with real contestants' scores
       const cleanPin = (pin || '').replace(/[\s-_]/g, '').toLowerCase();
-      if (cleanPin) {
+
+      // 2. Poll room state to sync contestant scores and wait for Host to click "Next Question"
+      const syncWithHost = () => {
+        if (!cleanPin) return;
         fetch(`/api/quiz/room/${cleanPin}`)
           .then((res) => res.json())
           .then((data) => {
-            if (data && Array.isArray(data.players) && data.players.length > 0) {
+            if (!data) return;
+
+            // Update leaderboard with real contestants' scores from room in real time
+            if (Array.isArray(data.players) && data.players.length > 0) {
               setLeaderboard((prev) => {
                 const updated = prev.map((item) => {
                   if (item.isMe) return item;
-                  const match = data.players.find((p: any) => p.name.toLowerCase() === item.name.toLowerCase());
+                  const match = data.players.find(
+                    (p: any) => p.name.toLowerCase() === item.name.toLowerCase()
+                  );
                   if (match) {
                     return {
                       ...item,
@@ -228,29 +234,107 @@ export const PlayGamePage: React.FC = () => {
                 return updated;
               });
             }
+
+            // ONLY WHEN HOST CLICKS "NEXT QUESTION":
+            // Server status is 'question' AND currentQuestion is greater than participant's currentIndex
+            if (
+              data.status === 'question' &&
+              typeof data.currentQuestion === 'number' &&
+              data.currentQuestion > currentIndex
+            ) {
+              sounds.playPop();
+              const nextIdx = data.currentQuestion;
+              setCurrentIndex(nextIdx);
+              resetForNewQuestion(activeQuestions[nextIdx]?.timeLimit || 15);
+              setPhase('playing');
+            }
+
+            // WHEN HOST FINISHES TOURNAMENT (Grand Podium):
+            if (data.status === 'ended') {
+              sounds.playVictory();
+              confetti({
+                particleCount: 120,
+                spread: 90,
+                origin: { y: 0.5 }
+              });
+              setPhase('finished');
+            }
           })
           .catch(() => {});
-      }
+      };
 
-      setAutoAdvanceTimer(5);
-      if (autoAdvanceRef.current) clearInterval(autoAdvanceRef.current);
+      // Also listen to storage events for instantaneous same-browser tab sync
+      const handleStorageUpdate = (e: StorageEvent) => {
+        if (e.key === 'cmrtc_room_state_sync' && e.newValue) {
+          try {
+            const syncData = JSON.parse(e.newValue);
+            if (
+              syncData.status === 'question' &&
+              typeof syncData.currentQuestion === 'number' &&
+              syncData.currentQuestion > currentIndex
+            ) {
+              sounds.playPop();
+              const nextIdx = syncData.currentQuestion;
+              setCurrentIndex(nextIdx);
+              resetForNewQuestion(activeQuestions[nextIdx]?.timeLimit || 15);
+              setPhase('playing');
+            } else if (syncData.status === 'ended') {
+              sounds.playVictory();
+              confetti({ particleCount: 120, spread: 90, origin: { y: 0.5 } });
+              setPhase('finished');
+            }
+          } catch {}
+        }
+      };
 
-      autoAdvanceRef.current = setInterval(() => {
-        setAutoAdvanceTimer((prev) => {
-          if (prev <= 1) {
-            clearInterval(autoAdvanceRef.current!);
-            advanceToNextQuestion();
-            return 0;
-          }
-          return prev - 1;
-        });
-      }, 1000);
+      window.addEventListener('storage', handleStorageUpdate);
+      syncWithHost();
+      const pollInterval = setInterval(syncWithHost, 800);
 
       return () => {
-        if (autoAdvanceRef.current) clearInterval(autoAdvanceRef.current);
+        window.removeEventListener('storage', handleStorageUpdate);
+        clearInterval(pollInterval);
       };
     }
-  }, [phase, currentIndex, isCorrect]);
+  }, [phase, currentIndex, isCorrect, pin]);
+
+  // While question is active (playing or waiting_others), synchronize with Host stage state
+  useEffect(() => {
+    if (phase === 'playing' || phase === 'waiting_others') {
+      const cleanPin = (pin || '').replace(/[\s-_]/g, '').toLowerCase();
+      if (!cleanPin) return;
+
+      const checkStageSync = () => {
+        fetch(`/api/quiz/room/${cleanPin}`)
+          .then((res) => res.json())
+          .then((data) => {
+            if (!data) return;
+
+            // Host revealed breakdown or leaderboard on auditorium screen -> conclude question
+            if (data.status === 'breakdown' || data.status === 'leaderboard') {
+              triggerQuestionConclude('timer');
+            } else if (
+              data.status === 'question' &&
+              typeof data.currentQuestion === 'number' &&
+              data.currentQuestion > currentIndex
+            ) {
+              sounds.playPop();
+              const nextIdx = data.currentQuestion;
+              setCurrentIndex(nextIdx);
+              resetForNewQuestion(activeQuestions[nextIdx]?.timeLimit || 15);
+              setPhase('playing');
+            } else if (data.status === 'ended') {
+              sounds.playVictory();
+              setPhase('finished');
+            }
+          })
+          .catch(() => {});
+      };
+
+      const poll = setInterval(checkStageSync, 1000);
+      return () => clearInterval(poll);
+    }
+  }, [phase, currentIndex, pin]);
 
   const handleJoin = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -1027,231 +1111,208 @@ export const PlayGamePage: React.FC = () => {
         </div>
       )}
 
-      {/* ================= 4. ANSWER FEEDBACK SCREEN WITH RIGHT-SIDE LEADERBOARD ================= */}
+      {/* ================= 4. ANSWER FEEDBACK & LIVE LEADERBOARD (HOST PACED) ================= */}
       {phase === 'answered' && (() => {
         const myRank = leaderboard.findIndex((p) => p.isMe) + 1;
         return (
-          <div className="w-full max-w-5xl space-y-4">
-            <div className="grid grid-cols-1 md:grid-cols-[1fr_310px] lg:grid-cols-[1fr_330px] gap-6 items-start">
-              {/* Left Column: Answer Feedback Card */}
-              <div className="card p-6 sm:p-8 bg-white border border-blue-100 shadow-xl rounded-3xl text-center space-y-5">
-                {/* Case Badge indicating why question concluded */}
-                  {(userSelectionRef.current.hasMarked || userHasMarked || (selectedOption !== null && selectedOption !== -1)) ? (
-                    <div className="inline-flex items-center gap-1.5 px-3.5 py-1.5 rounded-full bg-emerald-100 text-emerald-800 text-xs font-bold border border-emerald-200 shadow-sm">
-                      <CheckCircle className="w-4 h-4 text-emerald-600" />
-                      <span>✓ Answer Locked In & Recorded</span>
-                    </div>
-                  ) : (
-                    <div className="inline-flex items-center gap-1.5 px-3.5 py-1.5 rounded-full bg-amber-100 text-amber-800 text-xs font-bold border border-amber-200 shadow-sm">
-                      <Clock className="w-4 h-4 text-amber-600" />
-                      <span>⏰ Time Expired Before Answering</span>
-                    </div>
-                  )}
-
-                {/* Result Icon */}
-                <div className="space-y-2">
-                  {isCorrect ? (
-                    <div className="inline-flex p-3 rounded-full bg-emerald-100 text-emerald-600 shadow-sm">
-                      <CheckCircle className="w-14 h-14" />
-                    </div>
-                  ) : (
-                    <div className="inline-flex p-3 rounded-full bg-rose-100 text-rose-600 shadow-sm">
-                      <XCircle className="w-14 h-14" />
-                    </div>
-                  )}
-
-                  <h2 className="font-display text-2xl sm:text-3xl font-extrabold text-slate-900">
-                    {isCorrect ? 'Correct Answer!' : (selectedOption === -1 ? 'Time Expired!' : 'Incorrect')}
-                  </h2>
-
-                  <div className="text-base font-mono font-bold">
-                    {isCorrect ? (
-                      <span className="text-emerald-600 font-extrabold">+{pointsGained} pts</span>
-                    ) : (
-                      <span className="text-slate-400">+0 pts</span>
-                    )}
+          <div className="w-full max-w-2xl space-y-4">
+            {/* Top Compact Result Banner */}
+            <div className="card p-5 bg-white border border-blue-100 shadow-xl rounded-3xl text-center space-y-4">
+              {/* Result Pill */}
+              <div className="flex items-center justify-center gap-2 flex-wrap">
+                {isCorrect ? (
+                  <div className="inline-flex items-center gap-2 px-4 py-1.5 rounded-full bg-emerald-100 text-emerald-800 text-xs sm:text-sm font-extrabold border border-emerald-200 shadow-sm">
+                    <CheckCircle className="w-4 h-4 text-emerald-600" />
+                    <span>✓ Correct Answer! +{pointsGained} pts</span>
                   </div>
-                </div>
-
-                {/* Correct Answer Explanation Box */}
-                <div className="p-4 rounded-2xl bg-blue-50/60 border border-blue-100 text-left space-y-1.5 text-xs">
-                  <div className="font-bold text-slate-800">
-                    Correct Answer: <span className="text-emerald-600">{currentQ.options[currentQ.correctIndex]}</span>
+                ) : selectedOption === -1 ? (
+                  <div className="inline-flex items-center gap-2 px-4 py-1.5 rounded-full bg-amber-100 text-amber-900 text-xs sm:text-sm font-extrabold border border-amber-200 shadow-sm">
+                    <Clock className="w-4 h-4 text-amber-600" />
+                    <span>⏰ Time Expired (+0 pts)</span>
                   </div>
-                  <p className="text-slate-600 leading-relaxed">
-                    {currentQ.explanation}
-                  </p>
-                </div>
-
-                {/* Current Score Summary */}
-                <div className="flex items-center justify-around border-t border-blue-100 pt-3 text-xs">
-                  <div>
-                    <div className="text-slate-500">Total Score</div>
-                    <div className="font-display text-xl font-extrabold text-slate-900 font-mono mt-0.5">{totalScore}</div>
+                ) : (
+                  <div className="inline-flex items-center gap-2 px-4 py-1.5 rounded-full bg-rose-100 text-rose-800 text-xs sm:text-sm font-extrabold border border-rose-200 shadow-sm">
+                    <XCircle className="w-4 h-4 text-rose-600" />
+                    <span>✗ Incorrect (+0 pts)</span>
                   </div>
-                  <div>
-                    <div className="text-slate-500">Streak</div>
-                    <div className="font-display text-xl font-extrabold text-amber-600 font-mono mt-0.5">🔥 {streak}</div>
-                  </div>
-                  <div>
-                    <div className="text-slate-500">Your Rank</div>
-                    <div className="font-display text-xl font-extrabold text-blue-600 font-mono mt-0.5">
-                      #{myRank || 1}
-                    </div>
-                  </div>
-                </div>
-
-                {/* Automatic Next Question Banner (REPLACES the manual Next Question button!) */}
-                <div className="p-4 rounded-2xl bg-blue-50/80 border border-blue-200 text-left space-y-2">
-                  <div className="flex items-center justify-between text-xs font-semibold">
-                    <span className="flex items-center gap-2 text-blue-900 font-bold">
-                      <span className="w-2.5 h-2.5 rounded-full bg-blue-600 animate-ping" />
-                      {currentIndex + 1 < activeQuestions.length
-                        ? 'Next Question Starting Automatically'
-                        : 'Moving to Final Tournament Podium'}
-                    </span>
-                    <span className="font-mono text-sm font-extrabold text-blue-700 bg-white px-2.5 py-0.5 rounded-lg border border-blue-200 shadow-sm">
-                      in {autoAdvanceTimer}s
-                    </span>
-                  </div>
-                  <div className="w-full bg-blue-100 rounded-full h-1.5 overflow-hidden">
-                    <div
-                      className="bg-blue-600 h-full transition-all duration-1000 ease-linear rounded-full"
-                      style={{ width: `${((5 - autoAdvanceTimer) / 5) * 100}%` }}
-                    />
-                  </div>
-                  <p className="text-[11px] text-slate-500">
-                    Questions change strictly on question time or when all participants mark.
-                  </p>
-                </div>
+                )}
               </div>
 
-              {/* Right Column: Small Width Live Leaderboard */}
-              <div className="w-full space-y-4">
-                <div className="card p-5 bg-white border border-blue-100 rounded-3xl shadow-xl space-y-3.5 text-left">
-                  {/* Header */}
-                  <div className="flex items-center justify-between pb-3 border-b border-blue-100">
-                    <div className="flex items-center gap-2">
-                      <div className="w-8 h-8 rounded-xl bg-amber-100 text-amber-600 flex items-center justify-center font-bold shadow-sm">
-                        <Trophy className="w-4 h-4" />
-                      </div>
-                      <div>
-                        <h3 className="font-display font-extrabold text-slate-900 text-sm">
-                          Live Standings
-                        </h3>
-                        <div className="text-[11px] text-slate-400">
-                          Question {currentIndex + 1}
-                        </div>
-                      </div>
-                    </div>
-                    <span className="text-[10px] font-mono font-bold px-2 py-0.5 rounded-full bg-blue-100 text-blue-700">
-                      Rank #{myRank || 1}
-                    </span>
+              {/* Quick Score Strip */}
+              <div className="grid grid-cols-3 gap-2 p-3 rounded-2xl bg-blue-50/60 border border-blue-100 text-center">
+                <div>
+                  <div className="text-[10px] text-slate-500 uppercase font-bold">Total Score</div>
+                  <div className="font-display text-lg sm:text-xl font-extrabold text-slate-900 font-mono mt-0.5">
+                    {totalScore}
                   </div>
+                </div>
+                <div>
+                  <div className="text-[10px] text-slate-500 uppercase font-bold">Streak</div>
+                  <div className="font-display text-lg sm:text-xl font-extrabold text-amber-600 font-mono mt-0.5">
+                    🔥 {streak}
+                  </div>
+                </div>
+                <div>
+                  <div className="text-[10px] text-slate-500 uppercase font-bold">Your Rank</div>
+                  <div className="font-display text-lg sm:text-xl font-extrabold text-blue-600 font-mono mt-0.5">
+                    #{myRank || 1}
+                  </div>
+                </div>
+              </div>
+            </div>
 
-                  {/* Leaderboard Entries - Showing Real-Time Scores of Contestants */}
-                  <div className="space-y-2 max-h-[390px] overflow-y-auto pr-1">
-                    {leaderboard.slice(0, 7).map((player, idx) => {
-                      const isMe = player.isMe;
-                      const medalBadge =
-                        idx === 0
-                          ? 'bg-amber-100 text-amber-800 border-amber-300'
-                          : idx === 1
-                          ? 'bg-slate-100 text-slate-700 border-slate-300'
-                          : idx === 2
-                          ? 'bg-orange-100 text-orange-800 border-orange-300'
-                          : 'bg-blue-50/60 text-slate-500 border-blue-100';
+            {/* Host Pacing Status Banner (Strict Host Control - NO timer skip) */}
+            <div className="p-4 rounded-2xl bg-gradient-to-r from-blue-50/90 via-sky-50 to-indigo-50 border-2 border-blue-200 text-left space-y-1.5 shadow-sm">
+              <div className="flex items-center justify-between text-xs font-semibold">
+                <span className="flex items-center gap-2 text-blue-950 font-extrabold text-xs sm:text-sm">
+                  <span className="w-2.5 h-2.5 rounded-full bg-blue-600 animate-ping" />
+                  ⏳ Waiting for Host to start next question...
+                </span>
+                <span className="px-2.5 py-0.5 rounded-full bg-blue-100 text-blue-800 font-mono text-[11px] font-bold border border-blue-200">
+                  Q{currentIndex + 1} Done
+                </span>
+              </div>
+              <p className="text-[11px] sm:text-xs text-slate-600 leading-relaxed">
+                Review your live tournament rank below. The next question will appear here automatically when the Host clicks <strong>&quot;Next Question&quot;</strong> on the auditorium screen.
+              </p>
+            </div>
 
-                      return (
+            {/* LIVE STANDINGS LEADERBOARD (Full Width & Hero Focus) */}
+            <div className="card p-5 sm:p-6 bg-white border border-blue-100 rounded-3xl shadow-xl space-y-3.5 text-left">
+              {/* Header */}
+              <div className="flex items-center justify-between pb-3 border-b border-blue-100">
+                <div className="flex items-center gap-2.5">
+                  <div className="w-9 h-9 rounded-xl bg-amber-100 text-amber-600 flex items-center justify-center font-bold shadow-sm text-lg">
+                    🏆
+                  </div>
+                  <div>
+                    <h3 className="font-display font-extrabold text-slate-900 text-sm sm:text-base">
+                      Live Tournament Standings
+                    </h3>
+                    <div className="text-[11px] text-slate-500">
+                      Real-time scores after Question {currentIndex + 1}
+                    </div>
+                  </div>
+                </div>
+                <span className="text-[11px] font-mono font-bold px-2.5 py-1 rounded-full bg-blue-100 text-blue-800 border border-blue-200">
+                  Rank #{myRank || 1} of {totalContestants}
+                </span>
+              </div>
+
+              {/* Leaderboard Entries List */}
+              <div className="space-y-2 max-h-[380px] overflow-y-auto pr-1">
+                {leaderboard.map((player, idx) => {
+                  const isMe = player.isMe;
+                  const medalBadge =
+                    idx === 0
+                      ? 'bg-amber-100 text-amber-800 border-amber-300 ring-2 ring-amber-300/40'
+                      : idx === 1
+                      ? 'bg-slate-100 text-slate-700 border-slate-300'
+                      : idx === 2
+                      ? 'bg-orange-100 text-orange-800 border-orange-300'
+                      : 'bg-blue-50/60 text-slate-500 border-blue-100';
+
+                  return (
+                    <div
+                      key={player.id || idx}
+                      className={`flex items-center gap-2.5 p-2.5 rounded-2xl border text-xs transition-all ${
+                        isMe
+                          ? 'bg-blue-50/95 border-blue-400 ring-2 ring-blue-500/30 font-bold shadow-md'
+                          : idx === 0
+                          ? 'bg-amber-50/40 border-amber-200 shadow-sm'
+                          : 'bg-white border-slate-100 hover:border-blue-200'
+                      }`}
+                    >
+                      {/* Rank & Movement Indicator */}
+                      <div className="flex flex-col items-center justify-center shrink-0 w-7">
                         <div
-                          key={player.id || idx}
-                          className={`flex items-center gap-2 p-2.5 rounded-2xl border text-xs transition-all ${
-                            isMe
-                              ? 'bg-blue-50/95 border-blue-400 ring-2 ring-blue-500/20 font-bold shadow-md'
-                              : idx === 0
-                              ? 'bg-amber-50/40 border-amber-200'
-                              : 'bg-white border-slate-100'
-                          }`}
+                          className={`w-6 h-6 rounded-lg font-mono font-extrabold flex items-center justify-center text-xs border ${medalBadge}`}
                         >
-                          {/* Rank & Movement Indicator */}
-                          <div className="flex flex-col items-center justify-center shrink-0 w-7">
-                            <div
-                              className={`w-6 h-6 rounded-lg font-mono font-extrabold flex items-center justify-center text-xs border ${medalBadge}`}
-                            >
-                              {idx + 1}
-                            </div>
-                            {typeof player.rankChange === 'number' && (
-                              <div className="text-[9px] font-mono font-bold mt-0.5 leading-none">
-                                {player.rankChange > 0 ? (
-                                  <span className="text-emerald-600 flex items-center">▲{player.rankChange}</span>
-                                ) : player.rankChange < 0 ? (
-                                  <span className="text-rose-500 flex items-center">▼{Math.abs(player.rankChange)}</span>
-                                ) : (
-                                  <span className="text-slate-300">–</span>
-                                )}
-                              </div>
+                          {idx === 0 ? '🥇' : idx === 1 ? '🥈' : idx === 2 ? '🥉' : idx + 1}
+                        </div>
+                        {typeof player.rankChange === 'number' && (
+                          <div className="text-[9px] font-mono font-bold mt-0.5 leading-none">
+                            {player.rankChange > 0 ? (
+                              <span className="text-emerald-600 flex items-center">▲{player.rankChange}</span>
+                            ) : player.rankChange < 0 ? (
+                              <span className="text-rose-500 flex items-center">▼{Math.abs(player.rankChange)}</span>
+                            ) : (
+                              <span className="text-slate-300">–</span>
                             )}
                           </div>
+                        )}
+                      </div>
 
-                          {/* Avatar */}
-                          <div className="text-base shrink-0">{player.avatar}</div>
+                      {/* Avatar */}
+                      <div className="text-xl shrink-0">{player.avatar}</div>
 
-                          {/* Name & Branch */}
-                          <div className="flex-1 min-w-0">
-                            <div className="font-bold text-slate-900 truncate flex items-center gap-1">
-                              <span className="truncate">{player.name}</span>
-                              {isMe && (
-                                <span className="text-[9px] px-1.5 py-0.2 rounded-full bg-blue-600 text-white font-bold shrink-0">
-                                  YOU
-                                </span>
-                              )}
-                              {player.streak > 1 && (
-                                <span className="text-[9px] px-1 py-0.2 rounded-full bg-amber-100 text-amber-700 font-mono font-bold flex items-center shrink-0">
-                                  <Flame className="w-2.5 h-2.5 fill-amber-500" />
-                                  {player.streak}x
-                                </span>
-                              )}
-                            </div>
-                            <div className="text-[10px] text-slate-400 truncate">
-                              {player.branch}
-                            </div>
-                          </div>
-
-                          {/* Real-Time Score & Last Question Delta */}
-                          <div className="text-right shrink-0">
-                            <div className="font-mono font-extrabold text-blue-700 text-xs">
-                              {player.score.toLocaleString()} <span className="text-[9px] font-normal text-slate-500">pts</span>
-                            </div>
-                            <div className="text-[10px] font-mono font-bold">
-                              {typeof player.lastDelta === 'number' && player.lastDelta > 0 ? (
-                                <span className="text-emerald-600">+{player.lastDelta}</span>
-                              ) : (
-                                <span className="text-slate-400">+0</span>
-                              )}
-                            </div>
-                          </div>
+                      {/* Name & Branch */}
+                      <div className="flex-1 min-w-0">
+                        <div className="font-bold text-slate-900 truncate flex items-center gap-1.5">
+                          <span className="truncate">{player.name}</span>
+                          {isMe && (
+                            <span className="text-[9px] px-1.5 py-0.2 rounded-full bg-blue-600 text-white font-extrabold shrink-0 shadow-sm">
+                              YOU
+                            </span>
+                          )}
+                          {player.streak > 1 && (
+                            <span className="text-[9px] px-1 py-0.2 rounded-full bg-amber-100 text-amber-700 font-mono font-bold flex items-center shrink-0">
+                              <Flame className="w-2.5 h-2.5 fill-amber-500" />
+                              {player.streak}x
+                            </span>
+                          )}
                         </div>
-                      );
-                    })}
-                  </div>
+                        <div className="text-[10px] text-slate-400 truncate">
+                          {player.branch}
+                        </div>
+                      </div>
 
-                  {/* Summary Bar */}
-                  <div className="p-2.5 rounded-xl bg-blue-50/70 border border-blue-100 text-[11px] text-slate-600 flex items-center justify-between">
-                    <span className="font-bold text-slate-800">
-                      Your Standing: #{myRank} of {totalContestants}
-                    </span>
-                    {myRank === 1 ? (
-                      <span className="text-amber-700 font-bold flex items-center gap-1">
-                        👑 1st Place!
-                      </span>
-                    ) : (
-                      <span className="text-slate-500 font-mono">
-                        Gap to #1: {Math.max(0, (leaderboard[0]?.score || 0) - totalScore)} pts
-                      </span>
-                    )}
-                  </div>
-                </div>
+                      {/* Real-Time Score & Delta */}
+                      <div className="text-right shrink-0">
+                        <div className="font-mono font-extrabold text-blue-700 text-xs sm:text-sm">
+                          {player.score.toLocaleString()} <span className="text-[9px] font-normal text-slate-500">pts</span>
+                        </div>
+                        <div className="text-[10px] font-mono font-bold">
+                          {typeof player.lastDelta === 'number' && player.lastDelta > 0 ? (
+                            <span className="text-emerald-600">+{player.lastDelta}</span>
+                          ) : (
+                            <span className="text-slate-400">+0</span>
+                          )}
+                        </div>
+                      </div>
+                    </div>
+                  );
+                })}
               </div>
+
+              {/* Summary Bar */}
+              <div className="p-2.5 rounded-xl bg-blue-50/70 border border-blue-100 text-[11px] text-slate-600 flex items-center justify-between">
+                <span className="font-bold text-slate-800">
+                  Your Standing: #{myRank} of {totalContestants}
+                </span>
+                {myRank === 1 ? (
+                  <span className="text-amber-700 font-bold flex items-center gap-1">
+                    👑 1st Place!
+                  </span>
+                ) : (
+                  <span className="text-slate-500 font-mono">
+                    Gap to #1: {Math.max(0, (leaderboard[0]?.score || 0) - totalScore)} pts
+                  </span>
+                )}
+              </div>
+            </div>
+
+            {/* Question & Explanation Box (At bottom for easy reference) */}
+            <div className="card p-4 bg-white border border-blue-100 rounded-2xl text-left space-y-1.5 text-xs shadow-sm">
+              <div className="font-bold text-slate-800 flex items-center justify-between">
+                <span>💡 Question {currentIndex + 1} Review</span>
+                <span className="text-emerald-700 font-extrabold bg-emerald-50 px-2 py-0.5 rounded-lg border border-emerald-200">
+                  Answer: {currentQ.options[currentQ.correctIndex]}
+                </span>
+              </div>
+              <p className="text-slate-600 leading-relaxed text-[11px]">
+                {currentQ.explanation}
+              </p>
             </div>
           </div>
         );

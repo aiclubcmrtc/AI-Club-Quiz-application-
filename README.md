@@ -61,6 +61,15 @@ Once running, your terminal will display:
    - Questions change **only after all participants submit their answers** or the countdown timer expires.
    - After each question, a **compact Live Leaderboard** displays on the right side of both the host projector and student mobile screens with real-time score updates, ranks, and streaks!
 
+---
+
+## 🔐 Admin Login & Confidential Batches
+
+| Role | Username / Email | Password |
+| :--- | :--- | :--- |
+| **President (Master Admin)** | `president@cmrtc.ac.in` | `admin123` |
+| **Faculty Coordinator** | `faculty@cmrtc.ac.in` | `admin123` |
+| **Technical Lead** | `techlead@cmrtc.ac.in` | `admin123` |
 
 ### Multi-Round Batches System:
 - **Round 1**: Screening Round (15 Core CS & AI fundamentals)
@@ -77,4 +86,3 @@ cd client
 npm run build
 npm run preview -- --host
 ```
-321

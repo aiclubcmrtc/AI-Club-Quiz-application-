@@ -264,6 +264,10 @@ export const HostGamePage: React.FC = () => {
         body: JSON.stringify({ status: 'question', currentQuestion: 0 })
       }).catch(() => {});
     }
+    try {
+      localStorage.setItem('cmrtc_room_state_sync', JSON.stringify({ status: 'question', currentQuestion: 0, timestamp: Date.now() }));
+      window.dispatchEvent(new Event('storage'));
+    } catch {}
 
     setLeaderboardScores(
       players.map((p) => ({
@@ -289,6 +293,10 @@ export const HostGamePage: React.FC = () => {
         body: JSON.stringify({ status: 'breakdown', currentQuestion: currentIndex })
       }).catch(() => {});
     }
+    try {
+      localStorage.setItem('cmrtc_room_state_sync', JSON.stringify({ status: 'breakdown', currentQuestion: currentIndex, timestamp: Date.now() }));
+      window.dispatchEvent(new Event('storage'));
+    } catch {}
 
     // Dynamically calculate and sort points so the right-side leaderboard updates immediately
     setLeaderboardScores((prev) => {
@@ -335,6 +343,10 @@ export const HostGamePage: React.FC = () => {
         body: JSON.stringify({ status: 'leaderboard', currentQuestion: currentIndex })
       }).catch(() => {});
     }
+    try {
+      localStorage.setItem('cmrtc_room_state_sync', JSON.stringify({ status: 'leaderboard', currentQuestion: currentIndex, timestamp: Date.now() }));
+      window.dispatchEvent(new Event('storage'));
+    } catch {}
 
     // Slightly randomize scores to show dynamic stage movement
     setLeaderboardScores((prev) =>
@@ -358,6 +370,10 @@ export const HostGamePage: React.FC = () => {
           body: JSON.stringify({ status: 'question', currentQuestion: nextIdx })
         }).catch(() => {});
       }
+      try {
+        localStorage.setItem('cmrtc_room_state_sync', JSON.stringify({ status: 'question', currentQuestion: nextIdx, timestamp: Date.now() }));
+        window.dispatchEvent(new Event('storage'));
+      } catch {}
       setPhase('question');
     } else {
       if (cleanPin) {
@@ -367,6 +383,10 @@ export const HostGamePage: React.FC = () => {
           body: JSON.stringify({ status: 'ended' })
         }).catch(() => {});
       }
+      try {
+        localStorage.setItem('cmrtc_room_state_sync', JSON.stringify({ status: 'ended', timestamp: Date.now() }));
+        window.dispatchEvent(new Event('storage'));
+      } catch {}
       sounds.playVictory();
       confetti({
         particleCount: 150,
